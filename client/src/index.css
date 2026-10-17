@@ -1,0 +1,110 @@
+@import "tailwindcss";
+
+@theme {
+  /* Space Grotesk carries headings and the wordmark; Inter stays on body copy,
+     forms and dense data, where its narrower figures hold up better. */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Space Grotesk", "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  /* Three structural levels, so a card on a page and a field in a card are each
+     one step apart instead of relying on shadows to separate them. */
+  --color-canvas: #0c0f0e;
+  --color-surface: #151b17;
+  --color-raised: #1b231d;
+  --color-line: #29362d;
+  --color-line-soft: #202a23;
+
+  --color-primary: #17e88a;
+  --color-primary-hover: #45f0a4;
+  --color-primary-soft: #10291d;
+  /* White fails contrast against #17e88a, so a solid accent fill always carries
+     near-black type rather than the usual text-white. */
+  --color-primary-ink: #06110c;
+
+  --color-ink: #f4f7f5;
+  --color-muted: #94a39b;
+  /* Quietest text step, but still above 4.5:1 on surface — eyebrows and placeholders
+     are small type, so this cannot drop to a purely decorative grey. */
+  --color-faint: #7d8c84;
+
+  /* Green is the identity colour, so success shares it and reads as "done and
+     good". Amber means a deadline needs attention; red is reserved for overdue,
+     rejected or failed and never decorates anything else. */
+  --color-success: #17e88a;
+  --color-success-soft: #0f2a1e;
+  --color-pending: #f0b429;
+  --color-pending-soft: #2b2314;
+  --color-danger: #ff6b6b;
+  --color-danger-soft: #2d1719;
+  --color-info: #56b4e9;
+  --color-info-soft: #132430;
+}
+
+/* The three repeated shells. Using these instead of restating the classes keeps
+   every panel on the same radius, border and fill. */
+@utility panel {
+  @apply rounded-xl border border-line bg-surface;
+}
+
+@utility inset-panel {
+  @apply rounded-lg border border-line-soft bg-raised;
+}
+
+@utility eyebrow {
+  @apply text-[11px] font-semibold uppercase tracking-[0.16em] text-faint;
+}
+
+@layer base {
+  /* Tells the browser this is a dark document, so native date pickers, select
+     popups and scrollbars render dark instead of flashing white chrome. */
+  :root {
+    color-scheme: dark;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-canvas font-sans text-ink antialiased;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-display tracking-tight;
+  }
+
+  ::selection {
+    @apply bg-primary/30 text-ink;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-primary;
+  }
+
+  * {
+    scrollbar-color: var(--color-line) transparent;
+    scrollbar-width: thin;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border: 2px solid var(--color-canvas);
+    border-radius: 9999px;
+    background: var(--color-line);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3b4c40;
+  }
+}
