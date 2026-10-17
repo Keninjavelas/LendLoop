@@ -29,7 +29,7 @@ export const LOAN_POPULATE = [
   { path: 'itemId', select: 'title imageUrl condition status' },
   { path: 'categoryId', select: 'name defaultPriority' },
   { path: 'lenderId', select: 'name email' },
-  { path: 'borrowerId', select: 'name email phone' },
+  { path: 'borrowerId', select: 'name email profile.phone' },
 ];
 
 const HISTORY_POPULATE = [{ path: 'actorId', select: 'name email' }];

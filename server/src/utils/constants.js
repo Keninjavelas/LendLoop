@@ -12,6 +12,10 @@ export function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
+export function normaliseEmail(value = '') {
+  return String(value).trim().toLowerCase();
+}
+
 // wa.me rejects anything that is not digits, and silently opens an empty chat when
 // the country code is missing, so normalise rather than trust the raw input.
 export function normalisePhone(value = '') {

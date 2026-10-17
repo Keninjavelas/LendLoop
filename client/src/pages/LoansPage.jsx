@@ -16,6 +16,7 @@ import Button from '../components/common/Button.jsx';
 import EmptyState from '../components/common/EmptyState.jsx';
 import LoadingSpinner from '../components/common/LoadingSpinner.jsx';
 import Modal from '../components/common/Modal.jsx';
+import StatStrip from '../components/common/StatStrip.jsx';
 import DeadlinePriorityModal from '../components/loans/DeadlinePriorityModal.jsx';
 import LendingEntryForm from '../components/loans/LendingEntryForm.jsx';
 import LoanCard from '../components/loans/LoanCard.jsx';
@@ -357,7 +358,7 @@ export default function LoansPage() {
         </div>
 
         {role === 'lent' && (
-          <Button onClick={() => setModal({ mode: 'create', loan: null })}>
+          <Button className="sm:ml-auto" onClick={() => setModal({ mode: 'create', loan: null })}>
             <Plus className="h-4 w-4" aria-hidden="true" />
             New lending entry
           </Button>
@@ -411,20 +412,7 @@ export default function LoansPage() {
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        {stats.map(({ key, label, value, caption, icon: Icon, tint, valueClass }) => (
-          <div key={key} className="panel p-5">
-            <span className={cn('flex h-10 w-10 items-center justify-center rounded-lg', tint)}>
-              <Icon className="h-5 w-5" aria-hidden="true" />
-            </span>
-            <p className={cn('mt-3 font-display text-3xl font-extrabold tracking-tight', valueClass)}>
-              {value}
-            </p>
-            <p className="eyebrow mt-1">{label}</p>
-            <p className="mt-1.5 text-sm text-muted">{caption}</p>
-          </div>
-        ))}
-      </div>
+      <StatStrip stats={stats} columns={3} />
 
       {loading ? (
         <LoadingSpinner size="lg" label="Loading your loans" />

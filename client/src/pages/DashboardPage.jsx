@@ -311,7 +311,7 @@ export default function DashboardPage() {
     <div className="space-y-8">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
-          <p className="eyebrow">Your lending space</p>
+          <p className="eyebrow">Overview</p>
           <h1 className="mt-2.5 text-3xl font-bold text-ink sm:text-4xl">
             Keep track of what matters.
           </h1>
@@ -432,7 +432,6 @@ export default function DashboardPage() {
                 ) : (
                   <EmptyState
                     icon={Inbox}
-                    className="py-12"
                     title="Nothing lent out"
                     description="Record something you have handed over and LendLoop tracks the deadline and chases the return for you."
                     action={

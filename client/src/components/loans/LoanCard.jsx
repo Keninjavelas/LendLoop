@@ -24,7 +24,7 @@ function reminderState(loan) {
     };
   }
   if (!reminders.nextDueAt) {
-    return { tone: 'muted', icon: BellRing, text: 'Every scheduled reminder has been sent' };
+    return { tone: 'muted', icon: BellRing, text: 'All scheduled reminders logged' };
   }
   return {
     tone: 'ok',

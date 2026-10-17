@@ -40,9 +40,9 @@ const BACK_LINK_CLASS =
 const CATCH_UP_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const LOG_STATUS_LABELS = {
-  sent: 'Sent',
+  sent: 'Submitted',
   preview: 'Preview only',
-  link: 'Link ready',
+  link: 'Link generated',
   failed: 'Failed',
 };
 
@@ -136,7 +136,7 @@ function slotLabel(slot) {
 }
 
 function slotState(slot) {
-  if (slot.sent) return { label: 'Sent', className: 'bg-success-soft text-success ring-success/25' };
+  if (slot.sent) return { label: 'Logged', className: 'bg-success-soft text-success ring-success/25' };
   const age = Date.now() - new Date(slot.at).getTime();
   if (age <= 0) return { label: 'Scheduled', className: 'bg-info-soft text-info ring-info/25' };
   if (age <= CATCH_UP_WINDOW_MS) {
@@ -393,7 +393,7 @@ export default function LoanDetailPage() {
 
             <p className="mt-2 text-xs leading-relaxed text-muted">
               {reminders.enabled
-                ? `${FREQUENCY_LABELS[reminders.frequency] ?? reminders.frequency} · message from ${TEMPLATE_MODE_LABELS[reminders.templateMode] ?? reminders.templateMode}`
+                ? `${FREQUENCY_LABELS[reminders.frequency] ?? reminders.frequency} · template: ${TEMPLATE_MODE_LABELS[reminders.templateMode] ?? reminders.templateMode}.`
                 : 'Automatic reminders are switched off for this entry.'}
               {reminders.enabled && reminders.frequency !== 'manual' && (
                 <>
@@ -405,13 +405,13 @@ export default function LoanDetailPage() {
             </p>
 
             <p className="mt-2 text-xs text-muted">
-              Delivering on{' '}
+              Reminder channels:{' '}
               <span className="font-semibold text-ink">
                 {schedule?.channels?.length
                   ? schedule.channels.map((channel) => CHANNEL_LABELS[channel] ?? channel).join(' and ')
                   : 'nothing yet — no channel has both consent and contact details'}
               </span>
-              {reminders.lastSentAt ? ` · last sent ${timeAgo(reminders.lastSentAt)}` : ''}
+              {reminders.lastSentAt ? ` · last reminder logged ${timeAgo(reminders.lastSentAt)}` : ''}
             </p>
 
             <ul className="mt-4 space-y-2">
@@ -488,22 +488,35 @@ export default function LoanDetailPage() {
                       {log.scheduleSlot ? ` · slot ${log.scheduleSlot}` : ''}
                     </p>
 
+                    {log.status === 'sent' && (
+                      <p className="mt-1.5 text-xs text-muted">
+                        Accepted by the mail provider. Delivery confirmation is not tracked.
+                      </p>
+                    )}
                     {log.status === 'preview' && (
                       <p className="mt-1.5 text-xs text-muted">
                         No mail provider is configured, so this was rendered and logged rather than sent.
                       </p>
                     )}
-                    {log.status === 'link' && log.link && (
-                      <a
-                        href={log.link}
-                        target="_blank"
-                        rel="noreferrer"
-                        aria-label="Open the prefilled WhatsApp chat in a new tab"
-                        className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-success/35 bg-success-soft px-3 py-1.5 text-xs font-semibold text-success transition-colors hover:bg-success/15"
-                      >
-                        <MessageCircle className="h-3.5 w-3.5" aria-hidden="true" />
-                        Open the chat — you still press send
-                      </a>
+                    {log.status === 'link' && (
+                      <>
+                        <p className="mt-1.5 text-xs text-muted">
+                          WhatsApp link generated — nothing is sent until you press Send. Opening it
+                          does not confirm delivery.
+                        </p>
+                        {log.link && (
+                          <a
+                            href={log.link}
+                            target="_blank"
+                            rel="noreferrer"
+                            aria-label="Open the prefilled WhatsApp chat in a new tab"
+                            className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-success/35 bg-success-soft px-3 py-1.5 text-xs font-semibold text-success transition-colors hover:bg-success/15"
+                          >
+                            <MessageCircle className="h-3.5 w-3.5" aria-hidden="true" />
+                            Open the chat — you still press send
+                          </a>
+                        )}
+                      </>
                     )}
                     {log.status === 'failed' && log.error && (
                       <p className="mt-1.5 text-xs font-medium text-danger">{log.error}</p>

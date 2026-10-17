@@ -14,6 +14,7 @@ import {
 } from '../../utils/constants.js';
 import { cn } from '../../utils/cn.js';
 import { fromInputDate, toInputDate, tomorrowInputDate } from '../../utils/formatDate.js';
+import { useAuth } from '../../hooks/useAuth.js';
 import Button from '../common/Button.jsx';
 import { CheckRow, Field, FormSection, LABEL_CLASS, fieldClass } from '../common/Field.jsx';
 
@@ -21,11 +22,35 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const DAY_MS = 86400000;
 
-function initialChannels(priority) {
-  return [...(PRIORITY_SCHEDULES[priority]?.channels ?? ['email'])];
+// The stock preferences mirror the medium-priority defaults. Only a deliberate change
+// in Settings overrides the priority-driven channel presets, so existing accounts keep
+// the behaviour they had before preferences existed.
+function preferredChannels(preferences) {
+  if (!preferences) return [];
+  const untouched =
+    preferences.defaultReminderChannel === 'email' &&
+    preferences.emailNotifications === true &&
+    preferences.whatsappNotifications === false;
+  if (untouched) return [];
+
+  const enabled = [];
+  if (preferences.emailNotifications) enabled.push('email');
+  if (preferences.whatsappNotifications) enabled.push('whatsapp');
+  if (!enabled.length) return [];
+
+  const preferred = preferences.defaultReminderChannel;
+  return enabled.includes(preferred)
+    ? [preferred, ...enabled.filter((channel) => channel !== preferred)]
+    : enabled;
+}
+
+function initialChannels(priority, preferences) {
+  const preferred = preferredChannels(preferences);
+  return preferred.length ? preferred : [...(PRIORITY_SCHEDULES[priority]?.channels ?? ['email'])];
 }
 
 export default function LendingEntryForm({ categories = [], items = [], onSubmit, onCancel, submitting = false }) {
+  const { user } = useAuth();
   const [values, setValues] = useState({
     itemId: '',
     itemName: '',
@@ -40,7 +65,7 @@ export default function LendingEntryForm({ categories = [], items = [], onSubmit
     lentAt: toInputDate(new Date()),
     dueDate: tomorrowInputDate(),
     priority: 'category-default',
-    channels: initialChannels('medium'),
+    channels: initialChannels('medium', user?.preferences),
     remindersEnabled: true,
     frequency: 'daily',
     customOffsets: '-3, -1, 0',
@@ -76,7 +101,7 @@ export default function LendingEntryForm({ categories = [], items = [], onSubmit
       priority,
       channels: channelsTouched ? prev.channels : initialChannels(priority === 'category-default'
         ? category?.defaultPriority ?? 'medium'
-        : priority),
+        : priority, user?.preferences),
     }));
   }
 
@@ -89,7 +114,7 @@ export default function LendingEntryForm({ categories = [], items = [], onSubmit
       channels:
         channelsTouched || prev.priority !== 'category-default'
           ? prev.channels
-          : initialChannels(next?.defaultPriority ?? 'medium'),
+          : initialChannels(next?.defaultPriority ?? 'medium', user?.preferences),
     }));
   }
 
@@ -457,7 +482,7 @@ export default function LendingEntryForm({ categories = [], items = [], onSubmit
                     title={CHANNEL_LABELS[channel]}
                     description={
                       channel === 'email'
-                        ? 'Sent through your configured mail provider'
+                        ? 'Email through your configured provider (preview otherwise)'
                         : 'Opens a prefilled wa.me chat for you to send'
                     }
                   />

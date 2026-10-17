@@ -124,7 +124,7 @@ export async function approveRequest(req, res) {
       }
 
       const [borrower, defaultPriority] = await Promise.all([
-        User.findById(request.borrowerId, 'name email phone', { session }),
+        User.findById(request.borrowerId, 'name email profile.phone', { session }),
         categoryDefaultPriority(item.categoryId, { session }),
       ]);
       if (!borrower) throw new ApiError(404, 'The borrower account no longer exists');
@@ -159,7 +159,7 @@ export async function approveRequest(req, res) {
             borrower: {
               name: borrower.name,
               email: borrower.email,
-              phone: borrower.phone,
+              phone: borrower.profile?.phone ?? '',
               consent: { email: false, whatsapp: false, recordedAt: null },
             },
             lentAt: new Date(),

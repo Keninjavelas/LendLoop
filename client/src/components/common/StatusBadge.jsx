@@ -13,9 +13,9 @@ const STYLES = {
   active: 'bg-info-soft text-info ring-info/25',
   returned: 'bg-success-soft text-success ring-success/25',
   overdue: 'bg-danger-soft text-danger ring-danger/25',
-  // Reminder-log delivery states. Only `sent` means a message actually left the
-  // process: `preview` was rendered locally, and `link` still needs the lender to
-  // click through, so neither is allowed to borrow the success colour.
+  // Reminder-log states. `sent` means the provider accepted the message, not that it
+  // was delivered; `preview` was only rendered locally and `link` still needs the
+  // lender to press send, so none of these is a delivery receipt.
   sent: 'bg-success-soft text-success ring-success/25',
   preview: 'bg-info-soft text-info ring-info/25',
   link: 'bg-pending-soft text-pending ring-pending/25',

@@ -12,8 +12,8 @@ export const SCOPE_LABELS = {
 
 const SCOPE_HINTS = {
   general: 'The fallback wording, used when no priority or category template matches.',
-  priority: 'Sent for every loan on this priority, whatever the item is.',
-  category: 'Sent for loans whose item sits in this category.',
+  priority: 'Used for every loan on this priority, whatever the item is.',
+  category: 'Used for loans whose item sits in this category.',
 };
 
 const PLACEHOLDER_LEGEND = [

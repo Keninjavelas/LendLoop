@@ -12,6 +12,8 @@ const Category = (await import('../src/models/Category.js')).default;
 const Item = (await import('../src/models/Item.js')).default;
 const Loan = (await import('../src/models/Loan.js')).default;
 const User = (await import('../src/models/User.js')).default;
+const { DEFAULT_PREFERENCES } = await import('../src/models/User.js');
+const { REMINDER_CHANNELS, normaliseEmail } = await import('../src/utils/constants.js');
 const { priorityDefaults, refreshSchedule } = await import('../src/services/reminderService.js');
 
 if (!process.env.MONGODB_URI) {
@@ -85,9 +87,67 @@ async function renameBorrowedAt() {
   console.log(`[loans] renamed borrowedAt -> lentAt on ${result.modifiedCount} rows`);
 }
 
+async function migrateUsers() {
+  // Profile details moved from top-level `phone` into `profile`, and preferences and
+  // session versioning were added. Raw updates are used because the current schema no
+  // longer exposes the legacy field, so a model save would silently drop it.
+  const raw = User.collection;
+  const docs = await raw.find({}).toArray();
+  let moved = 0;
+
+  for (const doc of docs) {
+    const profile = doc.profile && typeof doc.profile === 'object' ? doc.profile : {};
+    const preferences =
+      doc.preferences && typeof doc.preferences === 'object' ? doc.preferences : {};
+    const needsUpdate =
+      doc.phone !== undefined ||
+      !doc.profile ||
+      profile.avatarUrl === undefined ||
+      !doc.preferences ||
+      !REMINDER_CHANNELS.includes(preferences.defaultReminderChannel) ||
+      typeof preferences.emailNotifications !== 'boolean' ||
+      typeof preferences.whatsappNotifications !== 'boolean' ||
+      doc.authVersion === undefined ||
+      doc.deletedAt === undefined;
+
+    if (!needsUpdate) continue;
+
+    const update = {
+      $set: {
+        email: normaliseEmail(doc.email),
+        profile: {
+          phone: profile.phone ?? doc.phone ?? '',
+          avatarUrl: profile.avatarUrl ?? '',
+        },
+        preferences: {
+          defaultReminderChannel: REMINDER_CHANNELS.includes(preferences.defaultReminderChannel)
+            ? preferences.defaultReminderChannel
+            : DEFAULT_PREFERENCES.defaultReminderChannel,
+          emailNotifications:
+            typeof preferences.emailNotifications === 'boolean'
+              ? preferences.emailNotifications
+              : DEFAULT_PREFERENCES.emailNotifications,
+          whatsappNotifications:
+            typeof preferences.whatsappNotifications === 'boolean'
+              ? preferences.whatsappNotifications
+              : DEFAULT_PREFERENCES.whatsappNotifications,
+        },
+        authVersion: Number.isInteger(doc.authVersion) ? doc.authVersion : 0,
+        deletedAt: doc.deletedAt ?? null,
+      },
+    };
+    if (doc.phone !== undefined) update.$unset = { phone: '' };
+
+    await raw.updateOne({ _id: doc._id }, update);
+    moved += 1;
+  }
+
+  console.log(`[users] normalised ${moved} profiles and preferences`);
+}
+
 async function backfillLoans() {
   const users = new Map(
-    (await User.find({}, { name: 1, email: 1, phone: 1 }).lean()).map((user) => [
+    (await User.find({}, { name: 1, email: 1, 'profile.phone': 1 }).lean()).map((user) => [
       String(user._id),
       user,
     ]),
@@ -130,7 +190,7 @@ async function backfillLoans() {
       loan.borrower = {
         name: borrowerUser?.name ?? 'Borrower',
         email: borrowerUser?.email ?? '',
-        phone: borrowerUser?.phone ?? '',
+        phone: borrowerUser?.profile?.phone ?? '',
         consent: { email: false, whatsapp: false, recordedAt: null },
       };
     }
@@ -174,6 +234,7 @@ await dropIndexIfExists(Loan.collection, 'itemId_1');
 await dropIndexIfExists(Item.collection, 'status_1_category_1');
 
 await renameBorrowedAt();
+await migrateUsers();
 await migrateItems(categoryIdByName);
 await backfillLoans();
 

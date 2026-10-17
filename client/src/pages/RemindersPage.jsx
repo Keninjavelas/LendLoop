@@ -18,6 +18,7 @@ import Button from '../components/common/Button.jsx';
 import EmptyState from '../components/common/EmptyState.jsx';
 import LoadingSpinner from '../components/common/LoadingSpinner.jsx';
 import PriorityBadge from '../components/common/PriorityBadge.jsx';
+import StatStrip from '../components/common/StatStrip.jsx';
 import StatusBadge from '../components/common/StatusBadge.jsx';
 import { getApiMessage } from '../services/api.js';
 import { reminderService } from '../services/reminderService.js';
@@ -41,35 +42,36 @@ const MODE_FILTERS = [
 
 const STATUS_FILTERS = [
   { value: '', label: 'All' },
-  { value: 'sent', label: 'Sent' },
+  { value: 'sent', label: 'Submitted' },
   { value: 'preview', label: 'Preview' },
-  { value: 'link', label: 'Link ready' },
+  { value: 'link', label: 'Link only' },
   { value: 'failed', label: 'Failed' },
 ];
 
-// "preview" means no mail provider is configured and "link" means the lender still has to
-// press send in WhatsApp, so neither is ever worded as a delivery. Static class strings
-// only - Tailwind scans source for literal values.
+// "sent" means the mail provider accepted the message, not that it reached the inbox.
+// "preview" never leaves the server, and "link" is only a generated WhatsApp chat. No
+// provider delivery callbacks exist, so the UI never claims a message was delivered.
+// Static class strings only - Tailwind scans source for literal values.
 const STATUS_META = {
   sent: {
-    label: 'Sent',
+    label: 'Submitted to provider',
     badge: 'bg-success-soft text-success ring-success/25',
     dot: 'bg-success',
-    note: 'Accepted by the configured mail provider.',
+    note: 'Accepted by the configured mail provider. Delivery confirmation is not tracked.',
     noteClass: 'text-muted',
   },
   preview: {
     label: 'Preview only — no mail provider configured',
     badge: 'bg-pending-soft text-pending ring-pending/25',
     dot: 'bg-pending',
-    note: 'The message was rendered and logged instead of sent. Nothing reached the borrower.',
+    note: 'The message was rendered and logged, not sent. Nothing reached the borrower.',
     noteClass: 'text-pending',
   },
   link: {
-    label: 'Link ready — not delivered by LendLoop',
+    label: 'Link generated — nothing sent',
     badge: 'bg-info-soft text-info ring-info/25',
     dot: 'bg-info',
-    note: 'LendLoop does not send WhatsApp messages. Open the link and press send yourself.',
+    note: 'LendLoop does not send WhatsApp messages and does not track whether you open the link. Press send in WhatsApp yourself.',
     noteClass: 'text-info',
   },
   failed: {
@@ -196,7 +198,7 @@ function LogCard({ log }) {
 
   return (
     <article className="panel p-4 sm:p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
         <div className="flex min-w-0 flex-1 gap-3">
           <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary-soft text-primary">
             <ChannelIcon className="h-5 w-5" aria-hidden="true" />
@@ -226,7 +228,7 @@ function LogCard({ log }) {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className="flex flex-wrap items-center gap-2 xl:justify-end">
           {loan?.priority && <PriorityBadge priority={loan.priority} />}
           {loan?.status === 'returned' && <StatusBadge status="returned" label="Item returned" />}
           <span
@@ -292,7 +294,7 @@ function LogCard({ log }) {
           </a>
         ) : (
           <p className="mt-3 text-xs font-medium text-danger">
-            No WhatsApp link was stored for this log, so it cannot be delivered.
+            No WhatsApp link was stored for this log. Generate a new reminder to create one.
           </p>
         ))}
 
@@ -389,18 +391,18 @@ export default function RemindersPage() {
     },
     {
       key: 'sent',
-      label: 'Sent',
+      label: 'Submitted',
       value: counts.sent,
-      caption: 'Accepted by the mail provider',
+      caption: 'Accepted by provider; delivery untracked',
       icon: Mail,
       tint: 'bg-success-soft text-success',
       valueClass: 'text-ink',
     },
     {
-      key: 'undelivered',
-      label: 'Not delivered',
+      key: 'not-sent',
+      label: 'Not sent',
       value: counts.preview + counts.link,
-      caption: 'Previews and WhatsApp links still on you',
+      caption: 'Previews and link-only attempts — nothing reached the borrower',
       icon: BellRing,
       tint: 'bg-pending-soft text-pending',
       valueClass: 'text-pending',
@@ -496,11 +498,11 @@ export default function RemindersPage() {
           </h1>
           <p className="mt-1.5 max-w-2xl text-sm text-muted">
             Every reminder LendLoop has attempted for your lending entries, automatic and manual.
-            Anything marked preview or link ready has not reached the borrower.
+            Anything marked preview or link generated has not reached the borrower.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
           <Button
             variant="secondary"
             onClick={() => setReloadKey((key) => key + 1)}
@@ -529,22 +531,7 @@ export default function RemindersPage() {
         )}
       </div>
 
-      {!loading && !error && logs.length > 0 && (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {stats.map(({ key, label, value, caption, icon: Icon, tint, valueClass }) => (
-            <div key={key} className="panel p-5">
-              <span className={cn('flex h-10 w-10 items-center justify-center rounded-lg', tint)}>
-                <Icon className="h-5 w-5" aria-hidden="true" />
-              </span>
-              <p className={cn('mt-3 font-display text-3xl font-extrabold tracking-tight', valueClass)}>
-                {value}
-              </p>
-              <p className="eyebrow mt-1">{label}</p>
-              <p className="mt-1.5 text-sm text-muted">{caption}</p>
-            </div>
-          ))}
-        </div>
-      )}
+      {!loading && !error && logs.length > 0 && <StatStrip stats={stats} columns={4} />}
 
       {loading ? (
         <LoadingSpinner size="lg" label="Loading your reminder history" />

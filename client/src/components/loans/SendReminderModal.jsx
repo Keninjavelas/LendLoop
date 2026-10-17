@@ -13,23 +13,24 @@ import { CheckRow, Field, LABEL_CLASS, RadioRow, fieldClass } from '../common/Fi
 const MODE_DESCRIPTIONS = {
   priority: 'Uses the template bound to this entry\'s priority',
   category: 'Uses the template bound to this entry\'s category, falling back to priority',
-  custom: 'Sends the message you write here, with placeholders filled in',
+  custom: 'Uses the message you write here, with placeholders filled in',
 };
 
 const STATUS_LABELS = {
-  sent: 'Sent',
+  sent: 'Submitted',
   preview: 'Preview only',
-  link: 'Link ready',
+  link: 'Link generated',
   failed: 'Failed',
 };
 
 // A log status of `link` means LendLoop produced a prefilled wa.me chat and nothing was
-// delivered yet; `preview` means no mail provider is configured. Neither is a receipt.
+// sent; `preview` means no mail provider is configured. `sent` means the provider
+// accepted the mail. None of these is a delivery receipt.
 const STATUS_HINTS = {
-  sent: 'Accepted by the mail provider',
+  sent: 'Accepted by the mail provider — delivery confirmation is not tracked',
   preview: 'No mail provider configured — nothing reached the borrower',
-  link: 'Open the chat and press send in WhatsApp yourself',
-  failed: 'Delivery failed',
+  link: 'WhatsApp link generated — nothing is sent until you press Send in WhatsApp',
+  failed: 'The provider rejected the message',
 };
 
 export default function SendReminderModal({ loan, open, onClose, onSent }) {
@@ -179,7 +180,7 @@ export default function SendReminderModal({ loan, open, onClose, onSent }) {
         )}
 
         <div className="inset-panel p-3.5">
-          <p className="eyebrow">Sent text</p>
+          <p className="eyebrow">Message text</p>
           <p className="mt-1.5 text-sm font-semibold text-ink">{result.message?.subject}</p>
           <p className="mt-1 whitespace-pre-line text-sm text-muted">{result.message?.body}</p>
         </div>
@@ -195,7 +196,7 @@ export default function SendReminderModal({ loan, open, onClose, onSent }) {
       title={result ? 'Reminder logged' : 'Send a reminder'}
       description={
         result
-          ? 'Manual sends are never deduplicated against the schedule, so this is on top of any automatic reminders.'
+          ? 'Manual attempts are never deduplicated against the schedule, so this is on top of any automatic reminders.'
           : `${loan?.itemName ?? 'This entry'} · ${loan?.borrower?.name ?? 'the borrower'}`
       }
       footer={

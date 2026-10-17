@@ -6,4 +6,7 @@ export const authService = {
   logout: () => api.post('/auth/logout'),
   me: () => api.get('/auth/me').then((res) => res.data.user),
   updateProfile: (payload) => api.patch('/users/me', payload).then((res) => res.data.user),
+  changePassword: (payload) =>
+    api.patch('/users/me/password', payload).then((res) => res.data.user),
+  deleteAccount: (payload) => api.delete('/users/me', { data: payload }),
 };
