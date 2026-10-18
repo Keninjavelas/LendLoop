@@ -73,7 +73,10 @@ export async function getReminderSchedule(req, res) {
     slots,
     nextDueAt: loan.reminders.nextDueAt,
     channels: usableChannels(loan),
-    armed: Boolean(loan.reminders.enabled && loan.reminders.frequency !== 'manual'),
+    // A returned loan keeps its reminder preferences for the record, but nothing is armed.
+    armed: Boolean(
+      loan.status === 'active' && loan.reminders.enabled && loan.reminders.frequency !== 'manual',
+    ),
   });
 }
 

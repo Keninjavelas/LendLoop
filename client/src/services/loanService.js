@@ -10,7 +10,7 @@ export const loanService = {
   updateDeadline: (id, payload) => api.patch(`/loans/${id}/deadline`, payload).then((res) => res.data),
   updatePriority: (id, payload) => api.patch(`/loans/${id}/priority`, payload).then((res) => res.data),
   updateCategory: (id, payload) => api.patch(`/loans/${id}/category`, payload).then((res) => res.data),
-  markReturned: (id, reason) => api.patch(`/loans/${id}/return`, { reason }).then((res) => res.data.loan),
+  markReturned: (id, payload = {}) => api.patch(`/loans/${id}/return`, payload).then((res) => res.data.loan),
 
   history: (id) => api.get(`/loans/${id}/history`).then((res) => res.data.history),
   reminders: (id) => api.get(`/loans/${id}/reminders`).then((res) => res.data.reminders),

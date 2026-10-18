@@ -10,6 +10,7 @@ import LoanDetailPage from './pages/LoanDetailPage.jsx';
 import LoansPage from './pages/LoansPage.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import MyItemsPage from './pages/MyItemsPage.jsx';
+import NewLoanPage from './pages/NewLoanPage.jsx';
 import NotFoundPage from './pages/NotFoundPage.jsx';
 import ProfilePage from './pages/ProfilePage.jsx';
 import RegisterPage from './pages/RegisterPage.jsx';
@@ -34,6 +35,7 @@ export default function App() {
           <Route path="/my-items" element={<MyItemsPage />} />
           <Route path="/requests" element={<RequestsPage />} />
           <Route path="/loans" element={<LoansPage />} />
+          <Route path="/loans/new" element={<NewLoanPage />} />
           <Route path="/loans/:id" element={<LoanDetailPage />} />
           <Route path="/reminders" element={<RemindersPage />} />
           <Route path="/categories" element={<CategoriesPage />} />

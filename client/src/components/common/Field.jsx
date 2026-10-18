@@ -28,6 +28,15 @@ export function fieldClass(error, { trailing = false } = {}) {
 
 export const LABEL_CLASS = 'mb-1.5 block text-sm font-semibold text-ink';
 
+// Field renders the message itself, so the control has to opt into the matching id.
+// Keeping this in one helper stops every form from inventing its own aria wiring.
+export function fieldAria(id, { error, hint } = {}) {
+  return {
+    'aria-invalid': error ? 'true' : undefined,
+    'aria-describedby': error ? `${id}-error` : hint ? `${id}-hint` : undefined,
+  };
+}
+
 export function Field({ id, label, hint, error, optional, children, className }) {
   return (
     <div className={className}>
@@ -37,9 +46,15 @@ export function Field({ id, label, hint, error, optional, children, className })
       </label>
       {children}
       {error ? (
-        <p className="mt-1.5 text-xs font-medium text-danger">{error}</p>
+        <p id={`${id}-error`} className="mt-1.5 text-xs font-medium text-danger">
+          {error}
+        </p>
       ) : (
-        hint && <p className="mt-1.5 text-xs leading-relaxed text-muted">{hint}</p>
+        hint && (
+          <p id={`${id}-hint`} className="mt-1.5 text-xs leading-relaxed text-muted">
+            {hint}
+          </p>
+        )
       )}
     </div>
   );

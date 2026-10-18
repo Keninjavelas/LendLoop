@@ -1,6 +1,5 @@
 import {
   ArrowUpRight,
-  Check,
   ChevronRight,
   CircleCheck,
   Inbox,
@@ -14,9 +13,9 @@ import { toast } from 'sonner';
 import Button from '../components/common/Button.jsx';
 import EmptyState from '../components/common/EmptyState.jsx';
 import LoadingSpinner from '../components/common/LoadingSpinner.jsx';
-import Modal from '../components/common/Modal.jsx';
 import { CategoryIcon } from '../components/items/ItemCard.jsx';
 import LoanCard from '../components/loans/LoanCard.jsx';
+import ReturnLoanDialog from '../components/loans/ReturnLoanDialog.jsx';
 import RequestCard from '../components/requests/RequestCard.jsx';
 import { useAuth } from '../hooks/useAuth.js';
 import { getApiMessage } from '../services/api.js';
@@ -27,7 +26,7 @@ import { cn } from '../utils/cn.js';
 import { isOverdue } from '../utils/formatDate.js';
 
 const DAY_MS = 86400000;
-const CREATE_ENTRY_TO = '/loans?new=1';
+const CREATE_ENTRY_TO = '/loans/new';
 
 // Literal class strings only - Tailwind's scanner cannot see values assembled at runtime.
 const VIEW_ALL_LINK =
@@ -126,8 +125,6 @@ export default function DashboardPage() {
 
   const [busyId, setBusyId] = useState('');
   const [pendingReturn, setPendingReturn] = useState(null);
-
-  const returnBusy = Boolean(pendingReturn) && busyId === pendingReturn._id;
 
   useEffect(() => {
     let ignore = false;
@@ -279,32 +276,18 @@ export default function DashboardPage() {
     }
   }
 
-  function closeReturnModal() {
-    if (returnBusy) return;
-    setPendingReturn(null);
-  }
-
-  async function handleConfirmReturn() {
-    if (!pendingReturn) return;
+  function handleReturned(returned) {
     const loan = pendingReturn;
-    const itemId = loan.itemId?._id;
+    if (!returned || !loan) return;
+    const itemId = returned.itemId?._id ?? returned.itemId ?? loan.itemId?._id;
 
-    setBusyId(loan._id);
-    try {
-      await loanService.markReturned(loan._id);
-      setLoans((current) => current.filter((entry) => entry._id !== loan._id));
-      if (itemId) {
-        setItems((current) =>
-          current.map((entry) => (entry._id === itemId ? { ...entry, status: 'available' } : entry)),
-        );
-      }
-      setPendingReturn(null);
-      toast.success('Item marked as returned');
-    } catch (actionError) {
-      toast.error(getApiMessage(actionError, 'Could not close that loan'));
-    } finally {
-      setBusyId('');
+    setLoans((current) => current.filter((entry) => entry._id !== returned._id));
+    if (itemId) {
+      setItems((current) =>
+        current.map((entry) => (entry._id === itemId ? { ...entry, status: 'available' } : entry)),
+      );
     }
+    setPendingReturn(null);
   }
 
   return (
@@ -524,36 +507,12 @@ export default function DashboardPage() {
         </>
       )}
 
-      <Modal
+      <ReturnLoanDialog
+        loan={pendingReturn}
         open={Boolean(pendingReturn)}
-        onClose={closeReturnModal}
-        size="sm"
-        title="Mark this item as returned?"
-        description="Closing the loan stops its reminders and frees any linked listing."
-        footer={
-          <>
-            <Button variant="secondary" onClick={closeReturnModal} disabled={returnBusy}>
-              Cancel
-            </Button>
-            <Button variant="success" onClick={handleConfirmReturn} loading={returnBusy}>
-              {!returnBusy && <Check className="h-4 w-4" aria-hidden="true" />}
-              Mark as returned
-            </Button>
-          </>
-        }
-      >
-        <p className="text-sm leading-relaxed text-muted">
-          Confirm that{' '}
-          <span className="font-semibold text-ink">
-            {pendingReturn?.borrower?.name ?? 'the borrower'}
-          </span>{' '}
-          has handed back{' '}
-          <span className="font-semibold text-ink">
-            {pendingReturn?.itemName ?? 'this item'}
-          </span>
-          . The loan is closed straight away and cannot be reopened.
-        </p>
-      </Modal>
+        onClose={() => setPendingReturn(null)}
+        onReturned={handleReturned}
+      />
     </div>
   );
 }

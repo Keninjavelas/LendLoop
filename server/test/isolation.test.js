@@ -282,3 +282,57 @@ test('reminder logs are scoped to the lender who sent them', async () => {
   assert.equal(outsiderLogs.status, 200);
   assert.equal(outsiderLogs.data.reminders.length, 0);
 });
+
+test('borrower context counts only account-linked loans and never merges manual entries', async () => {
+  const contextItem = await createItem(lenderClient, lenderCategory._id, {
+    title: 'Borrower context lamp',
+  });
+  const request = await borrowerClient.request('/requests', {
+    method: 'POST',
+    body: { itemId: contextItem._id, requestedReturnDate: inDays(12) },
+  });
+  assert.equal(request.status, 201);
+
+  const approval = await lenderClient.request(`/requests/${request.data.request._id}/approve`, {
+    method: 'PATCH',
+  });
+  assert.equal(approval.status, 200);
+  const linkedLoanId = approval.data.loan._id;
+  assert.equal(approval.data.loan.borrowerId.name, 'Borrower B');
+
+  // Same name and email, but without an account link this entry must stay isolated.
+  const manual = await lenderClient.request('/loans', {
+    method: 'POST',
+    body: manualLoanPayload(lenderCategory._id, {
+      itemName: 'Manual entry using the same name',
+      borrower: {
+        name: 'Borrower B',
+        email: borrower.email,
+        phone: '+91 91234 56780',
+        consent: { email: true, whatsapp: false },
+      },
+    }),
+  });
+  assert.equal(manual.status, 201);
+
+  const detail = await lenderClient.request(`/loans/${linkedLoanId}`);
+  assert.equal(detail.status, 200);
+  const context = detail.data.loan.borrowerContext;
+  assert.equal(context.linked, true);
+  assert.equal(context.email, borrower.email);
+  assert.equal(context.phone, '+91 91234 56780');
+  // The earlier camping-tent loan was returned; the same-name manual entry is not counted.
+  assert.equal(context.priorLoans, 1);
+  assert.equal(context.activeLoans, 0);
+  assert.equal(context.overdueLoans, 0);
+  assert.ok(context.lastLentAt);
+
+  const manualDetail = await lenderClient.request(`/loans/${manual.data.loan._id}`);
+  assert.equal(manualDetail.status, 200);
+  assert.equal(manualDetail.data.loan.borrowerContext.linked, false);
+  assert.equal(manualDetail.data.loan.borrowerContext.priorLoans, undefined);
+
+  const borrowerDetail = await borrowerClient.request(`/loans/${linkedLoanId}`);
+  assert.equal(borrowerDetail.status, 200);
+  assert.equal(borrowerDetail.data.loan.borrowerContext, undefined);
+});

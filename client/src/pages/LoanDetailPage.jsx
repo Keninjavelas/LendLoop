@@ -13,14 +13,13 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { toast } from 'sonner';
 import Button from '../components/common/Button.jsx';
 import LoadingSpinner from '../components/common/LoadingSpinner.jsx';
-import Modal from '../components/common/Modal.jsx';
 import PriorityBadge from '../components/common/PriorityBadge.jsx';
 import StatusBadge from '../components/common/StatusBadge.jsx';
 import DeadlinePriorityModal from '../components/loans/DeadlinePriorityModal.jsx';
 import LoanSettingsModal from '../components/loans/LoanSettingsModal.jsx';
+import ReturnLoanDialog from '../components/loans/ReturnLoanDialog.jsx';
 import SendReminderModal from '../components/loans/SendReminderModal.jsx';
 import { CategoryIcon } from '../components/items/ItemCard.jsx';
 import { useAuth } from '../hooks/useAuth.js';
@@ -135,8 +134,9 @@ function slotLabel(slot) {
   return `${days} day${days === 1 ? '' : 's'} before the deadline`;
 }
 
-function slotState(slot) {
+function slotState(slot, disarmed = false) {
   if (slot.sent) return { label: 'Logged', className: 'bg-success-soft text-success ring-success/25' };
+  if (disarmed) return { label: 'Cancelled', className: 'bg-surface text-faint ring-line' };
   const age = Date.now() - new Date(slot.at).getTime();
   if (age <= 0) return { label: 'Scheduled', className: 'bg-info-soft text-info ring-info/25' };
   if (age <= CATCH_UP_WINDOW_MS) {
@@ -161,7 +161,6 @@ export default function LoanDetailPage() {
   const [reloadKey, setReloadKey] = useState(0);
 
   const [modal, setModal] = useState(null);
-  const [busy, setBusy] = useState(false);
 
   const isLender = Boolean(user?._id) && loan?.lenderId?._id === user._id;
 
@@ -223,21 +222,11 @@ export default function LoanDetailPage() {
 
   const categoryNames = Object.fromEntries(categories.map((entry) => [entry._id, entry.name]));
 
-  async function handleConfirmReturn() {
-    setBusy(true);
-    try {
-      const returned = await loanService.markReturned(id);
-      setLoan(returned);
-      setModal(null);
-      toast.success('Return confirmed');
-      await loadLenderData().catch(() => {});
-    } catch (actionError) {
-      toast.error(getApiMessage(actionError, 'Could not confirm that return'));
-      setModal(null);
-      setReloadKey((key) => key + 1);
-    } finally {
-      setBusy(false);
-    }
+  function handleReturned(returned) {
+    setLoan(returned);
+    setModal(null);
+    loanService.history(id).then((data) => setHistory(Array.isArray(data) ? data : [])).catch(() => {});
+    loadLenderData().catch(() => {});
   }
 
   if (loading) return <LoadingSpinner size="lg" label="Loading this lending entry" />;
@@ -260,6 +249,9 @@ export default function LoanDetailPage() {
 
   const overdue = isOverdue(loan);
   const reminders = loan.reminders ?? {};
+  const remindersDisarmed = loan.status === 'returned';
+  const remindersArmed = Boolean(schedule?.armed) && !remindersDisarmed;
+  const borrowerContext = loan.borrowerContext ?? { linked: Boolean(loan.borrowerId) };
 
   return (
     <div className="space-y-8">
@@ -354,13 +346,128 @@ export default function LoanDetailPage() {
               <BellRing className="h-4 w-4" aria-hidden="true" />
               Send reminder
             </Button>
-            <Button variant="success" size="sm" onClick={() => setModal({ mode: 'return' })} loading={busy}>
+            <Button variant="success" size="sm" onClick={() => setModal({ mode: 'return' })}>
               <Check className="h-4 w-4" aria-hidden="true" />
-              Returned
+              Confirm return
             </Button>
           </div>
         )}
       </header>
+
+      {isLender && (
+        <div className={cn('grid gap-6', loan.status === 'returned' && 'lg:grid-cols-2')}>
+          <section className="panel p-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-bold text-ink">Borrower</h2>
+                <p className="mt-1 text-sm text-muted">
+                  {borrowerContext.linked
+                    ? 'History comes from loans linked to this account.'
+                    : 'This entry was recorded without a LendLoop account.'}
+                </p>
+              </div>
+              <span className="rounded-md bg-raised px-2.5 py-1 text-xs font-semibold text-muted ring-1 ring-inset ring-line">
+                {borrowerContext.linked ? 'Registered account' : 'Manual entry'}
+              </span>
+            </div>
+
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <div>
+                <p className="text-sm font-semibold text-ink">
+                  {loan.borrower?.name ?? 'Unknown borrower'}
+                </p>
+                <p className="mt-1 break-all text-sm text-muted">
+                  {borrowerContext.email || 'No email recorded'}
+                </p>
+                <p className="mt-0.5 break-all text-sm text-muted">
+                  {borrowerContext.phone || 'No phone recorded'}
+                </p>
+              </div>
+
+              {borrowerContext.linked ? (
+                <dl className="grid grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <dt className="eyebrow">Previous loans</dt>
+                    <dd className="mt-0.5 font-semibold tabular-nums text-ink">
+                      {borrowerContext.priorLoans ?? 0}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="eyebrow">Still out</dt>
+                    <dd className="mt-0.5 font-semibold tabular-nums text-ink">
+                      {borrowerContext.activeLoans ?? 0}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="eyebrow">Overdue</dt>
+                    <dd
+                      className={cn(
+                        'mt-0.5 font-semibold tabular-nums',
+                        (borrowerContext.overdueLoans ?? 0) > 0 ? 'text-danger' : 'text-ink',
+                      )}
+                    >
+                      {borrowerContext.overdueLoans ?? 0}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="eyebrow">Last lent</dt>
+                    <dd className="mt-0.5 font-semibold text-ink">
+                      {borrowerContext.lastLentAt ? formatDate(borrowerContext.lastLentAt) : '—'}
+                    </dd>
+                  </div>
+                </dl>
+              ) : (
+                <p className="text-xs leading-relaxed text-muted">
+                  Manual entries are not matched to other loans by name or contact details, so no
+                  history is attributed to this borrower.
+                </p>
+              )}
+            </div>
+          </section>
+
+          {loan.status === 'returned' && (
+            <section className="panel p-5">
+              <h2 className="text-sm font-bold text-ink">Return details</h2>
+              <dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2">
+                <div>
+                  <dt className="eyebrow">Returned on</dt>
+                  <dd className="mt-0.5 font-semibold text-ink">{formatDate(loan.returnedAt)}</dd>
+                </div>
+                <div>
+                  <dt className="eyebrow">Borrower confirmation</dt>
+                  <dd className="mt-0.5 text-ink">
+                    {loan.borrowerReturnConfirmation ? (
+                      <>
+                        Lender-reported
+                        <span className="text-muted">
+                          {' '}· {formatDateTime(loan.borrowerReturnConfirmation.reportedAt)}
+                        </span>
+                      </>
+                    ) : (
+                      'Not recorded'
+                    )}
+                  </dd>
+                </div>
+              </dl>
+
+              {loan.returnNote && (
+                <div className="mt-4 rounded-lg border border-line-soft bg-raised px-3.5 py-3">
+                  <p className="eyebrow">Return note</p>
+                  <p className="mt-1 whitespace-pre-line text-sm leading-relaxed text-muted">
+                    {loan.returnNote}
+                  </p>
+                </div>
+              )}
+
+              <p className="mt-3 text-xs leading-relaxed text-muted">
+                {loan.borrowerReturnConfirmation
+                  ? 'This confirmation is your report; LendLoop did not independently verify it with the borrower.'
+                  : 'No borrower confirmation was recorded when this loan was closed.'}
+              </p>
+            </section>
+          )}
+        </div>
+      )}
 
       {isLender && loan.notes && (
         <section className="panel p-5">
@@ -377,25 +484,27 @@ export default function LoanDetailPage() {
               <span
                 className={cn(
                   'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-semibold ring-1 ring-inset',
-                  schedule?.armed
+                  remindersArmed
                     ? 'bg-success-soft text-success ring-success/25'
                     : 'bg-raised text-muted ring-line',
                 )}
               >
-                {schedule?.armed ? (
+                {remindersArmed ? (
                   <BellRing className="h-3.5 w-3.5" aria-hidden="true" />
                 ) : (
                   <BellOff className="h-3.5 w-3.5" aria-hidden="true" />
                 )}
-                {schedule?.armed ? 'Armed' : 'Not armed'}
+                {remindersArmed ? 'Armed' : 'Not armed'}
               </span>
             </div>
 
             <p className="mt-2 text-xs leading-relaxed text-muted">
-              {reminders.enabled
-                ? `${FREQUENCY_LABELS[reminders.frequency] ?? reminders.frequency} · template: ${TEMPLATE_MODE_LABELS[reminders.templateMode] ?? reminders.templateMode}.`
-                : 'Automatic reminders are switched off for this entry.'}
-              {reminders.enabled && reminders.frequency !== 'manual' && (
+              {remindersDisarmed
+                ? 'This entry is returned, so automatic reminders are disarmed. Future slots below were cancelled.'
+                : reminders.enabled
+                  ? `${FREQUENCY_LABELS[reminders.frequency] ?? reminders.frequency} · template: ${TEMPLATE_MODE_LABELS[reminders.templateMode] ?? reminders.templateMode}.`
+                  : 'Automatic reminders are switched off for this entry.'}
+              {!remindersDisarmed && reminders.enabled && reminders.frequency !== 'manual' && (
                 <>
                   {' '}
                   Overdue nudges every {reminders.overdueIntervalHours} hours, capped at{' '}
@@ -416,7 +525,7 @@ export default function LoanDetailPage() {
 
             <ul className="mt-4 space-y-2">
               {(schedule?.slots ?? []).map((slot) => {
-                const state = slotState(slot);
+                const state = slotState(slot, remindersDisarmed);
                 return (
                   <li
                     key={`${slot.slot}-${slot.at}`}
@@ -601,30 +710,12 @@ export default function LoanDetailPage() {
         }}
       />
 
-      <Modal
+      <ReturnLoanDialog
+        loan={modal?.mode === 'return' ? loan : null}
         open={modal?.mode === 'return'}
         onClose={() => setModal(null)}
-        size="sm"
-        title="Confirm return"
-        description="Closing the entry stops its reminders and frees any linked listing."
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setModal(null)} disabled={busy}>
-              Cancel
-            </Button>
-            <Button variant="success" onClick={handleConfirmReturn} loading={busy}>
-              {!busy && <Check className="h-4 w-4" aria-hidden="true" />}
-              Confirm return
-            </Button>
-          </>
-        }
-      >
-        <p className="text-sm leading-relaxed text-muted">
-          Confirm that <span className="font-semibold text-ink">{loan.borrower?.name}</span> has handed
-          back <span className="font-semibold text-ink">{loan.itemName}</span>. The entry is closed
-          straight away and cannot be reopened.
-        </p>
-      </Modal>
+        onReturned={handleReturned}
+      />
     </div>
   );
 }

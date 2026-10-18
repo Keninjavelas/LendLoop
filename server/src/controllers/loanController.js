@@ -34,6 +34,11 @@ export const LOAN_POPULATE = [
 
 const HISTORY_POPULATE = [{ path: 'actorId', select: 'name email' }];
 
+const RETURN_NOTE_MAX_LENGTH = 500;
+const RETURN_CLOCK_SKEW_MS = 60_000;
+// LoanHistory.reason has its own 300-character limit; the full note lives on the loan.
+const HISTORY_REASON_MAX_LENGTH = 300;
+
 function isLender(loan, user) {
   const lenderId = loan.lenderId?._id ?? loan.lenderId;
   return Boolean(lenderId) && lenderId.equals(user._id);
@@ -254,6 +259,55 @@ export async function getLoans(req, res) {
   res.json({ loans: loans.map(decorate) });
 }
 
+// Only account-linked loans can be safely grouped. Manual entries deliberately stay isolated:
+// matching a name or contact detail would attribute someone else's history to this borrower.
+async function getBorrowerContext(loan) {
+  const account = loan.borrowerId;
+  const accountId = account?._id ?? account;
+  const base = {
+    linked: Boolean(accountId),
+    email: account?.email ?? loan.borrower?.email ?? '',
+    phone: account?.profile?.phone ?? loan.borrower?.phone ?? '',
+  };
+
+  if (!accountId) return base;
+
+  const [summary] = await Loan.aggregate([
+    {
+      $match: {
+        _id: { $ne: loan._id },
+        lenderId: loan.lenderId?._id ?? loan.lenderId,
+        borrowerId: accountId,
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        priorLoans: { $sum: 1 },
+        activeLoans: { $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] } },
+        overdueLoans: {
+          $sum: {
+            $cond: [
+              { $and: [{ $eq: ['$status', 'active'] }, { $lt: ['$dueDate', new Date()] }] },
+              1,
+              0,
+            ],
+          },
+        },
+        lastLentAt: { $max: '$lentAt' },
+      },
+    },
+  ]);
+
+  return {
+    ...base,
+    priorLoans: summary?.priorLoans ?? 0,
+    activeLoans: summary?.activeLoans ?? 0,
+    overdueLoans: summary?.overdueLoans ?? 0,
+    lastLentAt: summary?.lastLentAt ?? null,
+  };
+}
+
 export async function getLoanById(req, res) {
   const loan = await Loan.findById(req.params.id).populate(LOAN_POPULATE);
   if (!loan) throw new ApiError(404, 'Loan not found');
@@ -261,7 +315,12 @@ export async function getLoanById(req, res) {
     throw new ApiError(403, 'You do not have access to this loan');
   }
 
-  res.json({ loan: decorate(loan) });
+  const decorated = decorate(loan);
+  if (isLender(loan, req.user)) {
+    decorated.borrowerContext = await getBorrowerContext(loan);
+  }
+
+  res.json({ loan: decorated });
 }
 
 function assertLender(loan, user) {
@@ -487,6 +546,34 @@ export async function updateLoanSettings(req, res) {
 // Marking a return writes to both the loan and the item, so it is transactional:
 // a loan closed without freeing the item would strand it as permanently borrowed.
 export async function returnLoan(req, res) {
+  const {
+    returnedAt: returnedAtInput,
+    note: noteInput,
+    reason,
+    borrowerConfirmedReturn,
+  } = req.body ?? {};
+
+  // `reason` remains an alias for older clients; new clients send `note`.
+  const note = String(noteInput ?? reason ?? '').trim();
+  if (note.length > RETURN_NOTE_MAX_LENGTH) {
+    throw new ApiError(400, `Return note must be at most ${RETURN_NOTE_MAX_LENGTH} characters`);
+  }
+  if (borrowerConfirmedReturn !== undefined && typeof borrowerConfirmedReturn !== 'boolean') {
+    throw new ApiError(400, 'Borrower confirmation must be true or false');
+  }
+
+  const now = new Date();
+  const returnedAt =
+    returnedAtInput === undefined || returnedAtInput === null || returnedAtInput === ''
+      ? now
+      : new Date(returnedAtInput);
+  if (Number.isNaN(returnedAt.getTime())) {
+    throw new ApiError(400, 'Return date is not a valid date');
+  }
+  if (returnedAt.getTime() > now.getTime() + RETURN_CLOCK_SKEW_MS) {
+    throw new ApiError(400, 'Return date cannot be in the future');
+  }
+
   const session = await mongoose.startSession();
   let returnedLoan;
 
@@ -500,9 +587,22 @@ export async function returnLoan(req, res) {
       if (loan.status === 'returned') {
         throw new ApiError(400, 'This loan has already been marked as returned');
       }
+      if (returnedAt.getTime() < loan.lentAt.getTime()) {
+        throw new ApiError(400, 'Return date cannot be before the lending date');
+      }
 
       loan.status = 'returned';
-      loan.returnedAt = new Date();
+      loan.returnedAt = returnedAt;
+      loan.returnNote = note;
+      // The subdocument is present only when the lender explicitly reports the statement.
+      loan.borrowerReturnConfirmation = borrowerConfirmedReturn
+        ? {
+            source: 'lender-reported',
+            reportedAt: now,
+            reportedBy: req.user._id,
+          }
+        : undefined;
+
       await refreshSchedule(loan, { session });
       await loan.save({ session });
 
@@ -514,6 +614,12 @@ export async function returnLoan(req, res) {
         }
       }
 
+      const historyReason = note
+        ? note.slice(0, HISTORY_REASON_MAX_LENGTH)
+        : borrowerConfirmedReturn
+          ? 'Return confirmed by the lender; borrower confirmation was also reported by the lender'
+          : 'Return confirmed by the lender';
+
       await recordHistory(
         {
           loan,
@@ -522,7 +628,7 @@ export async function returnLoan(req, res) {
           field: 'status',
           from: 'active',
           to: 'returned',
-          reason: String(req.body?.reason ?? '').trim() || 'Return confirmed by the lender',
+          reason: historyReason,
         },
         { session },
       );
@@ -534,7 +640,10 @@ export async function returnLoan(req, res) {
   }
 
   const loan = await Loan.findById(returnedLoan._id).populate(LOAN_POPULATE);
-  res.json({ loan: decorate(loan) });
+  // Match getLoanById's lender payload so the detail view keeps borrower context after returning.
+  const decorated = decorate(loan);
+  decorated.borrowerContext = await getBorrowerContext(loan);
+  res.json({ loan: decorated });
 }
 
 export async function getLoanHistory(req, res) {

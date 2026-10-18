@@ -1,7 +1,6 @@
 import {
   ArrowUpRight,
   BellRing,
-  Check,
   CircleCheck,
   Clock,
   Handshake,
@@ -10,21 +9,18 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { toast } from 'sonner';
+import { useNavigate } from 'react-router-dom';
 import Button from '../components/common/Button.jsx';
 import EmptyState from '../components/common/EmptyState.jsx';
 import LoadingSpinner from '../components/common/LoadingSpinner.jsx';
-import Modal from '../components/common/Modal.jsx';
 import StatStrip from '../components/common/StatStrip.jsx';
 import DeadlinePriorityModal from '../components/loans/DeadlinePriorityModal.jsx';
-import LendingEntryForm from '../components/loans/LendingEntryForm.jsx';
 import LoanCard from '../components/loans/LoanCard.jsx';
 import LoanSettingsModal from '../components/loans/LoanSettingsModal.jsx';
+import ReturnLoanDialog from '../components/loans/ReturnLoanDialog.jsx';
 import SendReminderModal from '../components/loans/SendReminderModal.jsx';
 import { getApiMessage } from '../services/api.js';
 import { categoryService } from '../services/categoryService.js';
-import { itemService } from '../services/itemService.js';
 import { loanService } from '../services/loanService.js';
 import { cn } from '../utils/cn.js';
 import { PRIORITIES, priorityLabel } from '../utils/constants.js';
@@ -94,7 +90,6 @@ function TabButton({ active, onClick, icon: Icon, label }) {
 
 export default function LoansPage() {
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
 
   const [role, setRole] = useState('lent');
   const [status, setStatus] = useState('');
@@ -103,24 +98,13 @@ export default function LoansPage() {
 
   const [loans, setLoans] = useState([]);
   const [categories, setCategories] = useState([]);
-  const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
 
-  // One modal at a time: { mode: 'create' | 'remind' | 'reschedule' | 'settings' | 'return', loan }
+  // One modal at a time: { mode: 'remind' | 'reschedule' | 'settings' | 'return', loan }
   const [modal, setModal] = useState(null);
   const [busyId, setBusyId] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-
-  // The dashboard links here with ?new=1 so its call to action opens the form rather than
-  // merely landing on the list. The flag is cleared straight away, otherwise a refresh or a
-  // back-navigation would keep reopening a modal the lender already dismissed.
-  useEffect(() => {
-    if (!searchParams.get('new')) return;
-    setModal({ mode: 'create', loan: null });
-    setSearchParams({}, { replace: true });
-  }, [searchParams, setSearchParams]);
 
   useEffect(() => {
     let ignore = false;
@@ -152,9 +136,8 @@ export default function LoansPage() {
     };
   }, [role, status, priority, overdueOnly, reloadKey]);
 
-  // The lending entry form needs the category list for its priority defaults, and the
-  // lender's available listings so an entry can be linked to one. Both are optional to
-  // the page, so a failure only narrows the dropdowns.
+  // Category names and defaults label the deadline and priority dialog. A failure only
+  // narrows that dialog; the loan list itself stays usable.
   useEffect(() => {
     let ignore = false;
     categoryService
@@ -164,16 +147,6 @@ export default function LoansPage() {
       })
       .catch(() => {
         if (!ignore) setCategories([]);
-      });
-    itemService
-      .mine()
-      .then((result) => {
-        if (!ignore) {
-          setItems((Array.isArray(result) ? result : []).filter((item) => item.status === 'available'));
-        }
-      })
-      .catch(() => {
-        if (!ignore) setItems([]);
       });
     return () => {
       ignore = true;
@@ -262,11 +235,6 @@ export default function LoansPage() {
           },
         ];
 
-  function closeModal() {
-    if (submitting) return;
-    setModal(null);
-  }
-
   // Every mutation returns the server's view of the entry, so the card is replaced wholesale
   // rather than patched — the reminder schedule and channel readiness come from the server.
   function replaceLoan(loan) {
@@ -278,39 +246,18 @@ export default function LoansPage() {
     );
   }
 
-  async function handleCreate(payload) {
-    setSubmitting(true);
-    try {
-      const { loan, warnings } = await loanService.create(payload);
-      replaceLoan(loan);
-      setModal(null);
-      warnings?.forEach((warning) => toast.warning(warning));
-      toast.success('Lending entry saved');
-    } catch (createError) {
-      toast.error(getApiMessage(createError, 'Could not save that lending entry'));
-    } finally {
-      setSubmitting(false);
-    }
-  }
+  function handleReturned(returned) {
+    const loan = modal?.mode === 'return' ? modal.loan : null;
+    setModal(null);
+    if (!returned || !loan) return;
 
-  async function handleConfirmReturn() {
-    const loan = modal?.loan;
-    if (!loan) return;
-
-    setBusyId(loan._id);
-    try {
-      const returned = await loanService.markReturned(loan._id);
-      replaceLoan(returned ?? { ...loan, status: 'returned' });
-      setModal(null);
-      toast.success('Return confirmed');
-    } catch (actionError) {
-      toast.error(getApiMessage(actionError, 'Could not confirm that return'));
-      setModal(null);
-      // The server is the source of truth, so pull the list again after a conflict.
-      setReloadKey((key) => key + 1);
-    } finally {
-      setBusyId('');
+    // A returned entry no longer belongs in the active or overdue buckets.
+    if (status === 'active' || overdueOnly) {
+      setLoans((current) => current.filter((entry) => entry._id !== returned._id));
+      return;
     }
+
+    replaceLoan(returned);
   }
 
   function renderEmptyState() {
@@ -336,7 +283,7 @@ export default function LoansPage() {
         title="No lending entries here"
         description="Record anything you have lent — listed on LendLoop or not. Priority decides how early the reminders go out, and you stay in control of every one of them."
         action={
-          <Button onClick={() => setModal({ mode: 'create', loan: null })}>
+          <Button onClick={() => navigate('/loans/new')}>
             <Plus className="h-4 w-4" aria-hidden="true" />
             New lending entry
           </Button>
@@ -358,7 +305,7 @@ export default function LoansPage() {
         </div>
 
         {role === 'lent' && (
-          <Button className="sm:ml-auto" onClick={() => setModal({ mode: 'create', loan: null })}>
+          <Button className="sm:ml-auto" onClick={() => navigate('/loans/new')}>
             <Plus className="h-4 w-4" aria-hidden="true" />
             New lending entry
           </Button>
@@ -451,22 +398,6 @@ export default function LoansPage() {
         </div>
       )}
 
-      <Modal
-        open={modal?.mode === 'create'}
-        onClose={closeModal}
-        size="lg"
-        title="New lending entry"
-        description="Record what went out, who has it, and when it is due back. The borrower does not need a LendLoop account."
-      >
-        <LendingEntryForm
-          categories={categories}
-          items={items}
-          onSubmit={handleCreate}
-          onCancel={closeModal}
-          submitting={submitting}
-        />
-      </Modal>
-
       <SendReminderModal
         loan={modal?.mode === 'remind' ? modal.loan : null}
         open={modal?.mode === 'remind'}
@@ -489,36 +420,12 @@ export default function LoansPage() {
         onSaved={replaceLoan}
       />
 
-      <Modal
+      <ReturnLoanDialog
+        loan={modal?.mode === 'return' ? modal.loan : null}
         open={modal?.mode === 'return'}
-        onClose={closeModal}
-        size="sm"
-        title="Confirm return"
-        description="Closing the entry stops its reminders and frees any linked listing."
-        footer={
-          <>
-            <Button variant="secondary" onClick={closeModal} disabled={busyId !== ''}>
-              Cancel
-            </Button>
-            <Button
-              variant="success"
-              onClick={handleConfirmReturn}
-              loading={busyId === modal?.loan?._id}
-            >
-              {busyId !== modal?.loan?._id && <Check className="h-4 w-4" aria-hidden="true" />}
-              Confirm return
-            </Button>
-          </>
-        }
-      >
-        <p className="text-sm leading-relaxed text-muted">
-          Confirm that{' '}
-          <span className="font-semibold text-ink">{modal?.loan?.borrower?.name ?? 'the borrower'}</span>{' '}
-          has handed back{' '}
-          <span className="font-semibold text-ink">{modal?.loan?.itemName ?? 'this item'}</span>. The
-          entry is closed straight away and cannot be reopened.
-        </p>
-      </Modal>
+        onClose={() => setModal(null)}
+        onReturned={handleReturned}
+      />
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
+import Loan from '../src/models/Loan.js';
 import {
   createCategory,
   createClient,
@@ -15,13 +16,14 @@ import {
 let server;
 let baseUrl;
 let client;
+let lender;
 let categoryId;
 let itemId;
 
 before(async () => {
   ({ server, baseUrl } = await startTestServer());
   client = createClient(baseUrl);
-  await registerUser(client, { name: 'Lending Tester', email: uniqueEmail('lending') });
+  lender = await registerUser(client, { name: 'Lending Tester', email: uniqueEmail('lending') });
   const category = await createCategory(client, { name: 'AV equipment', defaultPriority: 'medium' });
   categoryId = category._id;
   const item = await createItem(client, categoryId, { title: 'Portable projector' });
@@ -109,6 +111,94 @@ test('creates a loan, tracks deadline and priority changes, then returns it', as
   assert.ok(kinds.includes('deadline'));
   assert.ok(kinds.includes('priority'));
   assert.ok(kinds.includes('status'));
+});
+
+test('inherits the category default at creation and only follows later category moves', async () => {
+  const category = await createCategory(client, { name: 'Winter gear', defaultPriority: 'low' });
+
+  const inherited = await client.request('/loans', {
+    method: 'POST',
+    body: manualLoanPayload(category._id, { itemName: 'Thermal flask', priority: 'category-default' }),
+  });
+  assert.equal(inherited.status, 201);
+  assert.equal(inherited.data.loan.priority, 'low');
+  assert.equal(inherited.data.loan.prioritySource, 'category');
+
+  // Editing the category default is deliberately non-retroactive.
+  const retuned = await client.request(`/categories/${category._id}`, {
+    method: 'PATCH',
+    body: { defaultPriority: 'high' },
+  });
+  assert.equal(retuned.status, 200);
+
+  const unchanged = await client.request(`/loans/${inherited.data.loan._id}`);
+  assert.equal(unchanged.status, 200);
+  assert.equal(unchanged.data.loan.priority, 'low');
+  assert.equal(unchanged.data.loan.prioritySource, 'category');
+
+  const nextCategory = await createCategory(client, { name: 'Camping gear', defaultPriority: 'medium' });
+  const moved = await client.request(`/loans/${inherited.data.loan._id}/category`, {
+    method: 'PATCH',
+    body: { categoryId: nextCategory._id, reason: 'Reclassified' },
+  });
+  assert.equal(moved.status, 200);
+  assert.equal(moved.data.priorityChanged, true);
+  assert.equal(moved.data.loan.priority, 'medium');
+  assert.equal(moved.data.loan.prioritySource, 'category');
+
+  // An explicit override survives a category move and never tracks the new default.
+  const manual = await client.request('/loans', {
+    method: 'POST',
+    body: manualLoanPayload(nextCategory._id, { itemName: 'Lantern', priority: 'low' }),
+  });
+  assert.equal(manual.status, 201);
+  assert.equal(manual.data.loan.prioritySource, 'manual');
+
+  const movedManual = await client.request(`/loans/${manual.data.loan._id}/category`, {
+    method: 'PATCH',
+    body: { categoryId: category._id },
+  });
+  assert.equal(movedManual.status, 200);
+  assert.equal(movedManual.data.priorityChanged, false);
+  assert.equal(movedManual.data.loan.priority, 'low');
+  assert.equal(movedManual.data.loan.prioritySource, 'manual');
+});
+
+test('links a listing to one active loan and frees it when that loan is returned', async () => {
+  const category = await createCategory(client, { name: 'Workshop tools', defaultPriority: 'medium' });
+  const item = await createItem(client, category._id, { title: 'Torque wrench' });
+
+  const first = await client.request('/loans', {
+    method: 'POST',
+    body: manualLoanPayload(category._id, { itemId: item._id, itemName: item.title }),
+  });
+  assert.equal(first.status, 201);
+  assert.equal(String(first.data.loan.itemId?._id ?? first.data.loan.itemId), item._id);
+
+  const borrowed = await client.request(`/items/${item._id}`);
+  assert.equal(borrowed.data.item.status, 'borrowed');
+
+  const conflict = await client.request('/loans', {
+    method: 'POST',
+    body: manualLoanPayload(category._id, { itemId: item._id, itemName: item.title }),
+  });
+  assert.equal(conflict.status, 409);
+  assert.match(conflict.data.message, /not available/i);
+
+  const returned = await client.request(`/loans/${first.data.loan._id}/return`, { method: 'PATCH' });
+  assert.equal(returned.status, 200);
+
+  const freed = await client.request(`/items/${item._id}`);
+  assert.equal(freed.data.item.status, 'available');
+
+  const second = await client.request('/loans', {
+    method: 'POST',
+    body: manualLoanPayload(category._id, { itemId: item._id, itemName: item.title }),
+  });
+  assert.equal(second.status, 201);
+
+  const borrowedAgain = await client.request(`/items/${item._id}`);
+  assert.equal(borrowedAgain.data.item.status, 'borrowed');
 });
 
 test('rejects malformed lending entries', async () => {
@@ -225,4 +315,140 @@ test('leaves automatic reminders disarmed without borrower consent', async () =>
   assert.equal(run.status, 200);
   assert.equal(run.data.summary.scanned, 0);
   assert.equal(run.data.summary.logs, 0);
+});
+
+test('records the actual return date, note and a lender-reported borrower confirmation', async () => {
+  const category = await createCategory(client, { name: 'Return metadata' });
+  const item = await createItem(client, category._id, { title: 'Return metadata speaker' });
+  const created = await client.request('/loans', {
+    method: 'POST',
+    body: manualLoanPayload(category._id, {
+      itemId: item._id,
+      itemName: item.title,
+      lentAt: inDays(-5),
+      dueDate: inDays(2),
+    }),
+  });
+  assert.equal(created.status, 201);
+  const loanId = created.data.loan._id;
+  assert.ok(created.data.loan.reminders.nextDueAt);
+
+  const returnedAt = inDays(-1);
+  const returned = await client.request(`/loans/${loanId}/return`, {
+    method: 'PATCH',
+    body: {
+      returnedAt,
+      note: 'Back with a small scratch on the case',
+      borrowerConfirmedReturn: true,
+    },
+  });
+
+  assert.equal(returned.status, 200);
+  const loan = returned.data.loan;
+  assert.equal(loan.status, 'returned');
+  assert.equal(new Date(loan.returnedAt).toISOString(), new Date(returnedAt).toISOString());
+  assert.equal(loan.returnNote, 'Back with a small scratch on the case');
+  assert.equal(loan.borrowerReturnConfirmation.source, 'lender-reported');
+  assert.ok(loan.borrowerReturnConfirmation.reportedAt);
+  assert.equal(String(loan.borrowerReturnConfirmation.reportedBy), lender._id);
+  assert.equal(loan.reminders.nextDueAt, null);
+  assert.equal(loan.borrowerContext.linked, false);
+  assert.equal(loan.borrowerContext.email, 'maya@example.test');
+  assert.equal(loan.borrowerContext.phone, '+91 98765 43210');
+
+  const available = await client.request(`/items/${item._id}`);
+  assert.equal(available.data.item.status, 'available');
+
+  const schedule = await client.request(`/loans/${loanId}/reminders/schedule`);
+  assert.equal(schedule.status, 200);
+  assert.equal(schedule.data.armed, false);
+  assert.equal(schedule.data.nextDueAt, null);
+  assert.ok(schedule.data.slots.length > 0);
+
+  const history = await client.request(`/loans/${loanId}/history`);
+  assert.equal(history.status, 200);
+  const statusEntry = history.data.history.find((entry) => entry.kind === 'status');
+  assert.equal(statusEntry.reason, 'Back with a small scratch on the case');
+
+  const stored = await Loan.findById(loanId);
+  assert.equal(stored.status, 'returned');
+  assert.equal(stored.returnNote, 'Back with a small scratch on the case');
+  assert.equal(stored.borrowerReturnConfirmation.source, 'lender-reported');
+  assert.equal(String(stored.borrowerReturnConfirmation.reportedBy), lender._id);
+
+  const secondReturn = await client.request(`/loans/${loanId}/return`, { method: 'PATCH' });
+  assert.equal(secondReturn.status, 400);
+});
+
+test('rejects invalid return metadata without closing the loan', async () => {
+  const category = await createCategory(client, { name: 'Return validation' });
+  const item = await createItem(client, category._id, { title: 'Return validation kettle' });
+  const created = await client.request('/loans', {
+    method: 'POST',
+    body: manualLoanPayload(category._id, {
+      itemId: item._id,
+      itemName: item.title,
+      lentAt: inDays(-3),
+      dueDate: inDays(3),
+    }),
+  });
+  assert.equal(created.status, 201);
+  const loanId = created.data.loan._id;
+
+  const cases = [
+    {
+      body: { returnedAt: new Date(Date.now() + 2 * 86_400_000).toISOString() },
+      pattern: /cannot be in the future/i,
+    },
+    { body: { returnedAt: inDays(-4) }, pattern: /before the lending date/i },
+    { body: { returnedAt: 'not-a-date' }, pattern: /not a valid date/i },
+    { body: { note: 'x'.repeat(501) }, pattern: /at most 500/i },
+    { body: { borrowerConfirmedReturn: 'yes' }, pattern: /true or false/i },
+  ];
+
+  for (const { body, pattern } of cases) {
+    const response = await client.request(`/loans/${loanId}/return`, { method: 'PATCH', body });
+    assert.equal(response.status, 400, JSON.stringify(body));
+    assert.match(response.data.message, pattern);
+  }
+
+  const stillActive = await client.request(`/loans/${loanId}`);
+  assert.equal(stillActive.data.loan.status, 'active');
+  assert.equal(stillActive.data.loan.returnedAt, null);
+  const stillBorrowed = await client.request(`/items/${item._id}`);
+  assert.equal(stillBorrowed.data.item.status, 'borrowed');
+
+  const other = createClient(baseUrl);
+  await registerUser(other, { name: 'Other Lender', email: uniqueEmail('other-lender') });
+  const foreignReturn = await other.request(`/loans/${loanId}/return`, { method: 'PATCH' });
+  assert.equal(foreignReturn.status, 403);
+});
+
+test('keeps the legacy reason alias and records no confirmation unless reported', async () => {
+  const category = await createCategory(client, { name: 'Legacy return' });
+  const created = await client.request('/loans', {
+    method: 'POST',
+    body: manualLoanPayload(category._id, {
+      itemName: 'Legacy return radio',
+      lentAt: inDays(-2),
+      dueDate: inDays(4),
+    }),
+  });
+  assert.equal(created.status, 201);
+  const loanId = created.data.loan._id;
+
+  const returned = await client.request(`/loans/${loanId}/return`, {
+    method: 'PATCH',
+    body: { reason: 'Returned in person' },
+  });
+
+  assert.equal(returned.status, 200);
+  const loan = returned.data.loan;
+  assert.equal(loan.returnNote, 'Returned in person');
+  assert.equal(loan.borrowerReturnConfirmation, undefined);
+  assert.ok(Date.now() - new Date(loan.returnedAt).getTime() < 60_000);
+
+  const history = await client.request(`/loans/${loanId}/history`);
+  const statusEntry = history.data.history.find((entry) => entry.kind === 'status');
+  assert.equal(statusEntry.reason, 'Returned in person');
 });

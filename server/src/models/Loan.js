@@ -85,6 +85,29 @@ const remindersSchema = new mongoose.Schema(
   { _id: false },
 );
 
+const borrowerReturnConfirmationSchema = new mongoose.Schema(
+  {
+    // This product only records a lender-reported statement. Keeping the source explicit
+    // stops it from being read as an independently verified borrower action.
+    source: {
+      type: String,
+      enum: {
+        values: ['lender-reported'],
+        message: '{VALUE} is not a supported confirmation source',
+      },
+      required: true,
+      default: 'lender-reported',
+    },
+    reportedAt: { type: Date, required: true },
+    reportedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+  },
+  { _id: false },
+);
+
 const loanSchema = new mongoose.Schema(
   {
     origin: {
@@ -143,6 +166,17 @@ const loanSchema = new mongoose.Schema(
     returnedAt: {
       type: Date,
       default: null,
+    },
+    // Return metadata is absent on older returned records and on loans closed without it.
+    returnNote: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: [500, 'Return note must be at most 500 characters'],
+    },
+    borrowerReturnConfirmation: {
+      type: borrowerReturnConfirmationSchema,
+      default: undefined,
     },
     status: {
       type: String,
