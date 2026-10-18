@@ -1,20 +1,25 @@
-import { ArrowLeft, RefreshCw, TriangleAlert } from 'lucide-react';
+import { ArrowLeft, Info, RefreshCw, TriangleAlert } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import Button from '../components/common/Button.jsx';
 import LoadingSpinner from '../components/common/LoadingSpinner.jsx';
 import LendingEntryForm from '../components/loans/LendingEntryForm.jsx';
 import { getApiMessage } from '../services/api.js';
+import { borrowerService } from '../services/borrowerService.js';
 import { categoryService } from '../services/categoryService.js';
 import { itemService } from '../services/itemService.js';
 import { loanService } from '../services/loanService.js';
 
 export default function NewLoanPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const borrowerId = searchParams.get('borrowerId') ?? '';
 
   const [categories, setCategories] = useState([]);
   const [items, setItems] = useState([]);
+  const [borrower, setBorrower] = useState(null);
+  const [borrowerNotice, setBorrowerNotice] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
@@ -28,16 +33,36 @@ export default function NewLoanPage() {
     setLoading(true);
     setLoadError('');
     setSubmitError('');
+    setBorrowerNotice('');
 
     // Categories drive the picker and priority inheritance, so that failure blocks the form.
-    // Listings are optional context, so a failed load only removes the link control.
-    Promise.all([categoryService.list(), itemService.mine().catch(() => [])])
-      .then(([loadedCategories, myItems]) => {
+    // Listings and the repeat-borrower prefill are optional context; a failed load only
+    // removes that convenience.
+    Promise.all([
+      categoryService.list(),
+      itemService
+        .mine()
+        .then((result) => result?.items ?? [])
+        .catch(() => []),
+      borrowerId
+        ? borrowerService
+            .get(borrowerId)
+            .then((result) => result?.borrower ?? null)
+            .catch(() => null)
+        : Promise.resolve(null),
+    ])
+      .then(([loadedCategories, myItems, linkedBorrower]) => {
         if (ignore) return;
         setCategories(Array.isArray(loadedCategories) ? loadedCategories : []);
         setItems(
           (Array.isArray(myItems) ? myItems : []).filter((item) => item.status === 'available'),
         );
+        setBorrower(linkedBorrower);
+        if (borrowerId && !linkedBorrower) {
+          setBorrowerNotice(
+            'That borrower could not be linked to this entry. You can still record the loan with manual borrower details.',
+          );
+        }
       })
       .catch((fetchError) => {
         if (ignore) return;
@@ -50,7 +75,7 @@ export default function NewLoanPage() {
     return () => {
       ignore = true;
     };
-  }, [reloadKey]);
+  }, [reloadKey, borrowerId]);
 
   async function handleSubmit(payload) {
     setSubmitting(true);
@@ -106,14 +131,26 @@ export default function NewLoanPage() {
           </Button>
         </div>
       ) : (
-        <LendingEntryForm
-          categories={categories}
-          items={items}
-          onSubmit={handleSubmit}
-          onCancel={() => navigate('/loans')}
-          submitting={submitting}
-          submitError={submitError}
-        />
+        <>
+          {borrowerNotice && (
+            <div
+              role="status"
+              className="flex items-start gap-2.5 rounded-lg border border-pending/30 bg-pending-soft px-4 py-3 text-sm leading-relaxed text-pending"
+            >
+              <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              {borrowerNotice}
+            </div>
+          )}
+          <LendingEntryForm
+            categories={categories}
+            items={items}
+            borrower={borrower}
+            onSubmit={handleSubmit}
+            onCancel={() => navigate('/loans')}
+            submitting={submitting}
+            submitError={submitError}
+          />
+        </>
       )}
     </div>
   );

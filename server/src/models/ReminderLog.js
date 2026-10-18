@@ -104,6 +104,8 @@ const reminderLogSchema = new mongoose.Schema(
 
 reminderLogSchema.index({ loanId: 1, createdAt: -1 });
 reminderLogSchema.index({ lenderId: 1, createdAt: -1 });
+// The control centre filters failed attempts and status counts for one lender.
+reminderLogSchema.index({ lenderId: 1, status: 1, createdAt: -1 });
 
 // A scheduled slot can only ever produce one log per loan, so a retried or
 // overlapping scheduler run cannot message the same borrower twice.

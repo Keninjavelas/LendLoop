@@ -1,4 +1,4 @@
-import { CalendarClock, MessageSquare, User } from 'lucide-react';
+import { CalendarClock, History, MessageSquare, User } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { formatDate, timeAgo } from '../../utils/formatDate.js';
 import Button from '../common/Button.jsx';
@@ -9,6 +9,10 @@ export default function RequestCard({ request, direction, onApprove, onReject, o
   const item = request.itemId;
   const counterparty = direction === 'incoming' ? request.borrowerId : request.ownerId;
   const isPending = request.status === 'pending';
+  const history = direction === 'incoming' ? request.borrowerHistory : null;
+  const priorLoans = history?.priorLoans ?? 0;
+  const knownBorrower = direction === 'incoming' && priorLoans > 0 && counterparty?._id;
+  const borrowerLink = `/borrowers/${counterparty?._id}`;
 
   return (
     <article className="panel p-4 transition-colors hover:border-faint sm:p-5">
@@ -34,11 +38,42 @@ export default function RequestCard({ request, direction, onApprove, onReject, o
               >
                 {item?.title ?? 'Item no longer available'}
               </Link>
-              <p className="mt-0.5 flex items-center gap-1.5 text-sm text-muted">
+              <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted">
                 <User className="h-3.5 w-3.5" aria-hidden="true" />
                 {direction === 'incoming' ? 'Requested by ' : 'Requested from '}
-                <span className="font-medium text-ink">{counterparty?.name ?? 'Unknown user'}</span>
+                {knownBorrower ? (
+                  <Link
+                    to={borrowerLink}
+                    className="font-medium text-ink hover:text-primary hover:underline"
+                  >
+                    {counterparty.name}
+                  </Link>
+                ) : (
+                  <span className="font-medium text-ink">{counterparty?.name ?? 'Unknown user'}</span>
+                )}
               </p>
+
+              {history && (
+                <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+                  <History className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  {priorLoans === 0 ? (
+                    <span>First-time borrower — no previous loans with you</span>
+                  ) : (
+                    <>
+                      <span className="font-medium text-ink">
+                        {priorLoans} previous {priorLoans === 1 ? 'loan' : 'loans'}
+                      </span>
+                      {history.activeLoans > 0 && <span>{history.activeLoans} active</span>}
+                      {history.overdueLoans > 0 && (
+                        <span className="font-semibold text-danger">
+                          {history.overdueLoans} overdue
+                        </span>
+                      )}
+                      {history.lastLentAt && <span>last lent {timeAgo(history.lastLentAt)}</span>}
+                    </>
+                  )}
+                </p>
+              )}
             </div>
             <StatusBadge status={request.status} />
           </div>

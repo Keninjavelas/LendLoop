@@ -7,6 +7,7 @@ import {
   KeyRound,
   LogOut,
   Mail,
+  MessageSquareText,
   Package,
   Phone,
   RefreshCw,
@@ -47,6 +48,26 @@ const QUICK_LINKS = [
     description: 'Due dates, returns and history',
     icon: RefreshCw,
   },
+  {
+    to: '/categories',
+    label: 'Categories',
+    description: 'Groups and default priorities',
+    icon: Boxes,
+  },
+  {
+    to: '/templates',
+    label: 'Templates',
+    description: 'Messages used by reminders',
+    icon: MessageSquareText,
+  },
+];
+
+const SECTION_LINKS = [
+  { href: '#account', label: 'Account' },
+  { href: '#profile-details', label: 'Profile details' },
+  { href: '#reminder-defaults', label: 'Notifications & defaults' },
+  { href: '#security', label: 'Security' },
+  { href: '#privacy', label: 'Privacy & deletion' },
 ];
 
 const CHANNEL_OPTIONS = [
@@ -107,7 +128,7 @@ function looksLikeHttpUrl(value) {
   }
 }
 
-export default function ProfilePage() {
+export default function SettingsPage() {
   const { user, setUser, logout, deleteAccount } = useAuth();
   const navigate = useNavigate();
 
@@ -153,7 +174,10 @@ export default function ProfilePage() {
   useEffect(() => {
     let ignore = false;
 
-    Promise.all([itemService.mine(), loanService.list({})])
+    Promise.all([
+      itemService.mine().then((result) => result?.items ?? []),
+      loanService.list({}),
+    ])
       .then(([myItems, allLoans]) => {
         if (ignore) return;
         const listings = Array.isArray(myItems) ? myItems : [];
@@ -368,15 +392,31 @@ export default function ProfilePage() {
     <div className="space-y-6">
       <header>
         <p className="eyebrow">Account</p>
-        <h1 className="mt-2 text-2xl font-bold tracking-tight text-ink sm:text-3xl">Profile</h1>
+        <h1 className="mt-2 text-2xl font-bold tracking-tight text-ink sm:text-3xl">Settings</h1>
         <p className="mt-1.5 max-w-2xl text-sm text-muted">
-          Your details are what borrowers and lenders see next to every request and loan.
+          Your profile, reminder defaults, security and account controls. Categories and reminder
+          templates are managed alongside these settings.
         </p>
       </header>
 
+      <nav
+        aria-label="Settings sections"
+        className="flex flex-wrap gap-2 rounded-xl border border-line bg-surface px-3 py-2.5"
+      >
+        {SECTION_LINKS.map((link) => (
+          <a
+            key={link.href}
+            href={link.href}
+            className="rounded-lg px-3 py-1.5 text-sm font-semibold text-muted transition-colors hover:bg-raised hover:text-ink"
+          >
+            {link.label}
+          </a>
+        ))}
+      </nav>
+
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
-          <section className="panel p-5 sm:p-6">
+          <section id="account" className="panel scroll-mt-24 p-5 sm:p-6">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex min-w-0 items-center gap-4">
                 <span className="relative flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary-soft text-xl font-extrabold tracking-tight text-primary">
@@ -417,7 +457,7 @@ export default function ProfilePage() {
             </div>
           </section>
 
-          <section className="panel p-5 sm:p-6">
+          <section id="profile-details" className="panel scroll-mt-24 p-5 sm:p-6">
             <p className="eyebrow">Edit details</p>
             <h2 className="mt-2 text-lg font-bold tracking-tight text-ink">Your information</h2>
             <p className="mt-1 text-sm text-muted">
@@ -547,7 +587,7 @@ export default function ProfilePage() {
                 )}
               </div>
 
-              <div className="border-t border-line pt-5">
+              <div id="reminder-defaults" className="scroll-mt-24 border-t border-line pt-5">
                 <div className="flex items-start gap-2.5">
                   <BellRing className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
                   <div>
@@ -617,7 +657,7 @@ export default function ProfilePage() {
             </form>
           </section>
 
-          <section className="panel flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+          <section id="security" className="panel scroll-mt-24 flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
             <div className="flex items-start gap-3">
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary-soft text-primary">
                 <KeyRound className="h-5 w-5" aria-hidden="true" />
@@ -634,7 +674,7 @@ export default function ProfilePage() {
             </Button>
           </section>
 
-          <section className="rounded-xl border border-danger/30 bg-danger-soft/25 p-5 sm:p-6">
+          <section id="privacy" className="scroll-mt-24 rounded-xl border border-danger/30 bg-danger-soft/25 p-5 sm:p-6">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
               <div className="flex items-start gap-3">
                 <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-danger-soft text-danger">

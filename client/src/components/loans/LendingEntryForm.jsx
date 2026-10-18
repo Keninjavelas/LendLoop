@@ -24,13 +24,27 @@ import ReviewStep from './entry/ReviewStep.jsx';
 export default function LendingEntryForm({
   categories = [],
   items = [],
+  borrower = null,
   onSubmit,
   onCancel,
   submitting = false,
   submitError = '',
 }) {
   const { user } = useAuth();
-  const [values, setValues] = useState(() => createEntryDefaults(user?.preferences));
+  const [values, setValues] = useState(() => {
+    const defaults = createEntryDefaults(user?.preferences);
+    if (!borrower?._id && !borrower?.borrowerId) return defaults;
+
+    // Repeat lending from a known account: identity comes from the account, never from
+    // typed-in contact details, and the server verifies the prior relationship again.
+    return {
+      ...defaults,
+      borrowerId: borrower.borrowerId ?? borrower._id,
+      borrowerName: borrower.name ?? '',
+      borrowerEmail: borrower.email ?? '',
+      borrowerPhone: borrower.phone ?? '',
+    };
+  });
   const initialValues = useRef(values);
   const [stepIndex, setStepIndex] = useState(0);
   const [errors, setErrors] = useState({});
@@ -184,7 +198,14 @@ export default function LendingEntryForm({
       />
     );
   } else if (currentStep.id === 'borrower') {
-    stepContent = <BorrowerStep values={values} errors={errors} update={update} />;
+    stepContent = (
+      <BorrowerStep
+        values={values}
+        errors={errors}
+        update={update}
+        linked={Boolean(values.borrowerId)}
+      />
+    );
   } else if (currentStep.id === 'terms') {
     stepContent = (
       <TermsStep

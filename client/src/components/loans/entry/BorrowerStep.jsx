@@ -7,17 +7,32 @@ import {
   fieldClass,
 } from '../../common/Field.jsx';
 
-export default function BorrowerStep({ values, errors, update }) {
+export default function BorrowerStep({ values, errors, update, linked = false }) {
   return (
     <FormSection
       title="Who has it"
-      description="Borrowers do not need a LendLoop account. Only you can see these details."
+      description={
+        linked
+          ? 'This entry is linked to an existing LendLoop account, so their identity is verified.'
+          : 'Borrowers do not need a LendLoop account. Only you can see these details.'
+      }
     >
+      {linked && (
+        <div className="rounded-lg border border-primary/30 bg-primary-soft px-4 py-3">
+          <p className="text-sm font-semibold text-ink">Linked LendLoop account</p>
+          <p className="mt-0.5 text-sm leading-relaxed text-muted">
+            Name, email and number come from their profile and stay read-only here. Only your own
+            lending history with them is used — other lenders' relationships are never visible.
+          </p>
+        </div>
+      )}
+
       <Field id="entry-borrower" label="Borrower name" error={errors.borrowerName}>
         <input
           id="entry-borrower"
           value={values.borrowerName}
           onChange={update('borrowerName')}
+          readOnly={linked}
           placeholder="Rohan Mehta"
           maxLength={100}
           className={fieldClass(errors.borrowerName)}
@@ -31,19 +46,20 @@ export default function BorrowerStep({ values, errors, update }) {
           label="Borrower email"
           optional
           error={errors.borrowerEmail}
-          hint="Used for email reminders"
+          hint={linked ? 'From their account' : 'Used for email reminders'}
         >
           <input
             id="entry-email"
             type="email"
             value={values.borrowerEmail}
             onChange={update('borrowerEmail')}
+            readOnly={linked}
             placeholder="rohan@example.com"
             maxLength={160}
             className={fieldClass(errors.borrowerEmail)}
             {...fieldAria('entry-email', {
               error: errors.borrowerEmail,
-              hint: 'Used for email reminders',
+              hint: linked ? 'From their account' : 'Used for email reminders',
             })}
           />
         </Field>
@@ -53,19 +69,20 @@ export default function BorrowerStep({ values, errors, update }) {
           label="WhatsApp number"
           optional
           error={errors.borrowerPhone}
-          hint="With country code, e.g. +919876543210"
+          hint={linked ? 'From their account' : 'With country code, e.g. +919876543210'}
         >
           <input
             id="entry-phone"
             type="tel"
             value={values.borrowerPhone}
             onChange={update('borrowerPhone')}
+            readOnly={linked}
             placeholder="+919876543210"
             maxLength={20}
             className={fieldClass(errors.borrowerPhone)}
             {...fieldAria('entry-phone', {
               error: errors.borrowerPhone,
-              hint: 'With country code, e.g. +919876543210',
+              hint: linked ? 'From their account' : 'With country code, e.g. +919876543210',
             })}
           />
         </Field>

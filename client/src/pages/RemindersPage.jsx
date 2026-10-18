@@ -1,18 +1,22 @@
 import {
   BellRing,
+  CalendarClock,
   ChevronDown,
   Clock,
   ExternalLink,
+  History,
   Inbox,
   Mail,
   MessageCircle,
-  Play,
   RefreshCw,
+  RotateCcw,
+  ShieldAlert,
   TriangleAlert,
   User,
+  X,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import Button from '../components/common/Button.jsx';
 import EmptyState from '../components/common/EmptyState.jsx';
@@ -23,8 +27,19 @@ import StatusBadge from '../components/common/StatusBadge.jsx';
 import { getApiMessage } from '../services/api.js';
 import { reminderService } from '../services/reminderService.js';
 import { cn } from '../utils/cn.js';
-import { CHANNEL_LABELS, REMINDER_CHANNELS } from '../utils/constants.js';
-import { formatDate, formatDateTime, timeAgo } from '../utils/formatDate.js';
+import {
+  CHANNEL_LABELS,
+  FREQUENCY_LABELS,
+  REMINDER_CHANNELS,
+} from '../utils/constants.js';
+import { formatDate, formatDateTime, timeAgo, untilLabel } from '../utils/formatDate.js';
+
+const VIEWS = [
+  { value: 'upcoming', label: 'Upcoming', icon: CalendarClock },
+  { value: 'blocked', label: 'Blocked', icon: ShieldAlert },
+  { value: 'failed', label: 'Failed', icon: TriangleAlert },
+  { value: 'history', label: 'History', icon: Inbox },
+];
 
 const CHANNEL_FILTERS = [
   { value: '', label: 'All' },
@@ -94,6 +109,8 @@ const FALLBACK_STATUS = {
   dot: 'bg-faint',
 };
 
+const DAY_MS = 86_400_000;
+
 function pluralise(count, word) {
   return `${count} ${word}${count === 1 ? '' : 's'}`;
 }
@@ -126,6 +143,12 @@ function slotLabel(slot) {
   }
 
   return raw;
+}
+
+// timeAgo reads past timestamps; a scheduled slot points at the future.
+function isDueSoon(value) {
+  const time = new Date(value).getTime();
+  return !Number.isNaN(time) && time <= Date.now() + 2 * DAY_MS;
 }
 
 // `cn` joins without merging, so each state is one complete literal string rather than an
@@ -167,6 +190,37 @@ function FilterRow({ label, options, value, onChange }) {
   );
 }
 
+function ViewTab({ active, onClick, icon: Icon, label, count }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        'flex items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-semibold transition-colors sm:flex-1',
+        active
+          ? 'bg-primary-soft text-primary ring-1 ring-inset ring-primary/25'
+          : 'text-muted hover:bg-raised hover:text-ink',
+      )}
+    >
+      <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+      {label}
+      {typeof count === 'number' && (
+        <span
+          className={cn(
+            'rounded-md px-1.5 py-0.5 text-xs font-bold tabular-nums',
+            active
+              ? 'bg-primary/15 text-primary'
+              : 'bg-raised text-muted ring-1 ring-inset ring-line',
+          )}
+        >
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
 function LogStatusBadge({ status }) {
   const meta = STATUS_META[status] ?? FALLBACK_STATUS;
 
@@ -183,7 +237,7 @@ function LogStatusBadge({ status }) {
   );
 }
 
-function LogCard({ log }) {
+function LogCard({ log, onRetry, retrying = false }) {
   const loan = log.loanId ?? null;
   const meta = STATUS_META[log.status] ?? FALLBACK_STATUS;
   const mode = MODE_META[log.mode] ?? {
@@ -195,6 +249,7 @@ function LogCard({ log }) {
   const slot = log.mode === 'automatic' ? slotLabel(log.scheduleSlot) : '';
   const stamp = log.sentAt || log.createdAt;
   const borrowerName = loan?.borrower?.name ?? 'Unknown borrower';
+  const retryable = Boolean(onRetry) && ['failed', 'link'].includes(log.status);
 
   return (
     <article className="panel p-4 sm:p-5">
@@ -314,6 +369,30 @@ function LogCard({ log }) {
         </p>
       )}
 
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {retryable && (
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => onRetry(log)}
+            loading={retrying}
+            disabled={retrying}
+          >
+            {!retrying && <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />}
+            {log.status === 'failed' ? 'Retry reminder' : 'Regenerate WhatsApp link'}
+          </Button>
+        )}
+        {loan?._id && (
+          <Link
+            to={`/reminders?view=history&loanId=${loan._id}`}
+            className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-semibold text-muted transition-colors hover:text-ink"
+          >
+            <History className="h-3.5 w-3.5" aria-hidden="true" />
+            This entry&apos;s history
+          </Link>
+        )}
+      </div>
+
       <details className="inset-panel mt-3">
         <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-xs font-semibold text-ink marker:content-none">
           Message body
@@ -327,164 +406,540 @@ function LogCard({ log }) {
   );
 }
 
+function UpcomingCard({ entry }) {
+  const soon = isDueSoon(entry.nextDueAt);
+
+  return (
+    <article className="panel p-4 sm:p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 gap-3">
+          <span
+            className={cn(
+              'flex h-11 w-11 shrink-0 items-center justify-center rounded-lg',
+              soon ? 'bg-pending-soft text-pending' : 'bg-primary-soft text-primary',
+            )}
+          >
+            <BellRing className="h-5 w-5" aria-hidden="true" />
+          </span>
+
+          <div className="min-w-0">
+            <Link
+              to={`/loans/${entry._id}`}
+              className="line-clamp-1 font-semibold text-ink hover:text-primary"
+            >
+              {entry.itemName}
+            </Link>
+            <p className="mt-0.5 truncate text-sm text-muted">
+              <span className="font-medium text-ink">{entry.borrowerName}</span> · due{' '}
+              {formatDate(entry.dueDate)}
+            </p>
+
+            <p
+              className={cn(
+                'mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs',
+                soon ? 'font-semibold text-pending' : 'text-muted',
+              )}
+            >
+              <CalendarClock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              Next slot {formatDateTime(entry.nextDueAt)}
+              <span className="font-normal text-muted">({untilLabel(entry.nextDueAt)})</span>
+            </p>
+
+            <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
+              <PriorityBadge priority={entry.priority} />
+              {entry.channels.map((channel) => (
+                <span
+                  key={channel}
+                  className="rounded-md bg-raised px-2 py-0.5 font-medium text-muted ring-1 ring-inset ring-line"
+                >
+                  {CHANNEL_LABELS[channel] ?? channel}
+                </span>
+              ))}
+              <span className="rounded-md bg-raised px-2 py-0.5 font-medium text-muted ring-1 ring-inset ring-line">
+                {FREQUENCY_LABELS[entry.frequency] ?? entry.frequency}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex shrink-0 flex-wrap items-center gap-2 sm:flex-col sm:items-end">
+          <Link
+            to={`/loans/${entry._id}`}
+            className="text-xs font-semibold text-primary hover:underline"
+          >
+            View entry
+          </Link>
+          <Link
+            to={`/reminders?view=history&loanId=${entry._id}`}
+            className="text-xs font-medium text-muted hover:text-ink"
+          >
+            Reminder history
+          </Link>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function BlockedCard({ entry }) {
+  return (
+    <article className="panel p-4 sm:p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 gap-3">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-pending-soft text-pending">
+            <ShieldAlert className="h-5 w-5" aria-hidden="true" />
+          </span>
+
+          <div className="min-w-0">
+            <Link
+              to={`/loans/${entry._id}`}
+              className="line-clamp-1 font-semibold text-ink hover:text-primary"
+            >
+              {entry.itemName}
+            </Link>
+            <p className="mt-0.5 truncate text-sm text-muted">
+              <span className="font-medium text-ink">{entry.borrowerName}</span> · due{' '}
+              {formatDate(entry.dueDate)}
+            </p>
+
+            <p className="mt-2 text-xs font-semibold text-pending">
+              Armed, but nothing can be sent until these are fixed:
+            </p>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-muted">
+              {entry.missing.map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+
+        <div className="flex shrink-0 flex-wrap items-center gap-2 sm:flex-col sm:items-end">
+          <Link
+            to={`/loans/${entry._id}`}
+            className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
+          >
+            Open entry settings
+          </Link>
+          <Link
+            to={`/reminders?view=history&loanId=${entry._id}`}
+            className="text-xs font-medium text-muted hover:text-ink"
+          >
+            Reminder history
+          </Link>
+        </div>
+      </div>
+    </article>
+  );
+}
+
 export default function RemindersPage() {
-  const [channel, setChannel] = useState('');
-  const [mode, setMode] = useState('');
-  const [status, setStatus] = useState('');
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const rawView = searchParams.get('view') ?? '';
+  const view = VIEWS.some((entry) => entry.value === rawView) ? rawView : 'upcoming';
+  const rawChannel = searchParams.get('channel') ?? '';
+  const channel = REMINDER_CHANNELS.includes(rawChannel) ? rawChannel : '';
+  const rawMode = searchParams.get('mode') ?? '';
+  const mode = ['manual', 'automatic'].includes(rawMode) ? rawMode : '';
+  const rawStatus = searchParams.get('status') ?? '';
+  const status = STATUS_FILTERS.some((entry) => entry.value === rawStatus) ? rawStatus : '';
+  const loanId = searchParams.get('loanId') ?? '';
+  const from = searchParams.get('from') ?? '';
+  const to = searchParams.get('to') ?? '';
+  const q = searchParams.get('q') ?? '';
+
+  const [term, setTerm] = useState(q);
+  const [overview, setOverview] = useState(null);
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [overviewError, setOverviewError] = useState('');
+  const [overviewKey, setOverviewKey] = useState(0);
 
   const [logs, setLogs] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [reloadKey, setReloadKey] = useState(0);
-  const [running, setRunning] = useState(false);
+  const [logLimit, setLogLimit] = useState(100);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState('');
+  const [historyKey, setHistoryKey] = useState(0);
+
+  const [retryingId, setRetryingId] = useState('');
+
+  const rangeInvalid = Boolean(from && to && from > to);
+  const historyFiltersActive = Boolean(channel || mode || status || loanId || from || to || q);
+
+  function updateParams(changes) {
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        for (const [key, value] of Object.entries(changes)) {
+          if (value === '' || value === null || value === undefined) next.delete(key);
+          else next.set(key, value);
+        }
+        return next;
+      },
+      { replace: true },
+    );
+  }
+
+  useEffect(() => {
+    setTerm(q);
+  }, [q]);
+
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    const trimmed = term.trim();
+    if (trimmed) next.set('q', trimmed);
+    else next.delete('q');
+    if (next.toString() === searchParams.toString()) return undefined;
+    const handle = setTimeout(() => setSearchParams(next, { replace: true }), 300);
+    return () => clearTimeout(handle);
+  }, [term, searchParams, setSearchParams]);
 
   useEffect(() => {
     let ignore = false;
 
-    setLoading(true);
-    setError('');
+    setOverviewLoading(true);
+    setOverviewError('');
+
+    reminderService
+      .overview()
+      .then((result) => {
+        if (ignore) return;
+        setOverview(result ?? null);
+      })
+      .catch((fetchError) => {
+        if (ignore) return;
+        setOverviewError(getApiMessage(fetchError, 'Could not load your reminder overview'));
+      })
+      .finally(() => {
+        if (!ignore) setOverviewLoading(false);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [overviewKey]);
+
+  useEffect(() => {
+    if (view !== 'history') return undefined;
+
+    let ignore = false;
+
+    setHistoryLoading(true);
+    setHistoryError('');
 
     reminderService
       .logs({
         channel: channel || undefined,
         mode: mode || undefined,
         status: status || undefined,
+        loanId: loanId || undefined,
+        from: from || undefined,
+        to: to || undefined,
+        limit: 100,
       })
       .then((result) => {
         if (ignore) return;
-        setLogs(Array.isArray(result) ? result : []);
+        setLogs(Array.isArray(result?.reminders) ? result.reminders : []);
+        setLogLimit(Number(result?.limit) || 100);
       })
       .catch((fetchError) => {
         if (ignore) return;
-        setError(getApiMessage(fetchError, 'Could not load your reminder history'));
+        setHistoryError(getApiMessage(fetchError, 'Could not load your reminder history'));
       })
       .finally(() => {
-        if (!ignore) setLoading(false);
+        if (!ignore) setHistoryLoading(false);
       });
 
     return () => {
       ignore = true;
     };
-  }, [channel, mode, status, reloadKey]);
+  }, [view, channel, mode, status, loanId, from, to, historyKey]);
 
-  // Counted from the loaded logs only - the endpoint caps at the newest 200, so these are
-  // never presented as lifetime totals.
-  const counts = useMemo(() => {
-    const tally = { sent: 0, preview: 0, link: 0, failed: 0 };
-    for (const log of logs) {
-      if (Object.hasOwn(tally, log.status)) tally[log.status] += 1;
-    }
-    return tally;
-  }, [logs]);
-
-  const filtersActive = Boolean(channel || mode || status);
-
-  const stats = [
-    {
-      key: 'logged',
-      label: 'Logged',
-      value: logs.length,
-      caption: 'Reminders in this view, newest first',
-      icon: Inbox,
-      tint: 'bg-info-soft text-info',
-      valueClass: 'text-ink',
-    },
-    {
-      key: 'sent',
-      label: 'Submitted',
-      value: counts.sent,
-      caption: 'Accepted by provider; delivery untracked',
-      icon: Mail,
-      tint: 'bg-success-soft text-success',
-      valueClass: 'text-ink',
-    },
-    {
-      key: 'not-sent',
-      label: 'Not sent',
-      value: counts.preview + counts.link,
-      caption: 'Previews and link-only attempts — nothing reached the borrower',
-      icon: BellRing,
-      tint: 'bg-pending-soft text-pending',
-      valueClass: 'text-pending',
-    },
-    {
-      key: 'failed',
-      label: 'Failed',
-      value: counts.failed,
-      caption: 'Rejected by the provider',
-      icon: TriangleAlert,
-      tint: 'bg-danger-soft text-danger',
-      valueClass: counts.failed ? 'text-danger' : 'text-ink',
-    },
-  ];
-
-  function clearFilters() {
-    setChannel('');
-    setMode('');
-    setStatus('');
+  function clearHistoryFilters() {
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams();
+        if (current.get('view') === 'history') next.set('view', 'history');
+        return next;
+      },
+      { replace: true },
+    );
+    setTerm('');
   }
 
-  async function handleRun() {
-    setRunning(true);
+  function refreshAll() {
+    setOverviewKey((key) => key + 1);
+    if (view === 'history') setHistoryKey((key) => key + 1);
+  }
+
+  async function handleRetry(log) {
+    setRetryingId(log._id);
     try {
-      const summary = (await reminderService.run()) ?? {};
-      const scanned = summary.scanned ?? 0;
-      const slotsDue = summary.slotsDue ?? 0;
-      const logged = summary.logs ?? 0;
-      const failed = summary.failed ?? 0;
-      const skipped = summary.skippedNoChannel ?? 0;
+      const result = await reminderService.retry(log._id);
+      const newLog = result?.logs?.[0];
+      const warning = result?.warnings?.[0];
 
-      // "Logged" rather than "sent": a pass can produce previews or WhatsApp links.
-      const headline = logged
-        ? `Scheduler pass: ${pluralise(scanned, 'entry')} scanned, ${pluralise(slotsDue, 'slot')} due, ${pluralise(logged, 'reminder')} logged`
-        : `Scheduler pass: nothing was due yet — ${pluralise(scanned, 'entry')} scanned`;
-      const options = skipped
-        ? { description: `${pluralise(skipped, 'entry')} skipped with no usable channel` }
-        : undefined;
-
-      if (failed) {
-        toast.error(`${headline} — ${pluralise(failed, 'reminder')} failed`, options);
+      if (newLog?.status === 'sent') {
+        toast.success('Retry submitted — the provider accepted the message', {
+          description: warning || 'Delivery confirmation is not tracked.',
+        });
+      } else if (newLog?.status === 'link') {
+        toast.info('A fresh WhatsApp link was generated — open it and press send', {
+          description: warning || 'Nothing was sent from LendLoop.',
+        });
+      } else if (newLog?.status === 'preview') {
+        toast.info('Preview logged — no mail provider is configured, so nothing was sent', {
+          description: warning || 'Configure email delivery before relying on automatic reminders.',
+        });
       } else {
-        toast.success(headline, options);
+        toast.error('The retry did not produce a sent reminder', {
+          description: warning || 'Check the new history entry for the provider response.',
+        });
       }
 
-      setReloadKey((key) => key + 1);
-    } catch (runError) {
-      toast.error(getApiMessage(runError, 'Could not run the scheduler'));
+      setOverviewKey((key) => key + 1);
+      setHistoryKey((key) => key + 1);
+    } catch (error) {
+      toast.error(getApiMessage(error, 'Could not retry that reminder'));
     } finally {
-      setRunning(false);
+      setRetryingId('');
     }
   }
 
-  function renderEmptyState() {
-    if (filtersActive) {
+  const summary = overview?.summary ?? null;
+  const upcoming = overview?.upcoming ?? [];
+  const blocked = overview?.blocked ?? [];
+  const failed = overview?.failed ?? [];
+  const statusCounts = summary?.statusCounts ?? { sent: 0, preview: 0, link: 0, failed: 0 };
+
+  const stats = summary
+    ? [
+        {
+          key: 'scheduled',
+          label: 'Scheduled',
+          value: summary.scheduled,
+          caption: `${summary.armed} armed of ${summary.activeLoans} active entries`,
+          icon: CalendarClock,
+          tint: 'bg-info-soft text-info',
+          valueClass: 'text-ink',
+        },
+        {
+          key: 'soon',
+          label: 'Due in 7 days',
+          value: summary.dueSoon,
+          caption: 'Next reminder slots inside the week',
+          icon: BellRing,
+          tint: 'bg-primary-soft text-primary',
+          valueClass: summary.dueSoon ? 'text-primary' : 'text-ink',
+        },
+        {
+          key: 'blocked',
+          label: 'Blocked',
+          value: summary.blocked,
+          caption: 'Armed without consent or contact details',
+          icon: ShieldAlert,
+          tint: 'bg-pending-soft text-pending',
+          valueClass: summary.blocked ? 'text-pending' : 'text-ink',
+        },
+        {
+          key: 'failed',
+          label: 'Failed',
+          value: summary.failed,
+          caption: 'Provider rejections, all time',
+          icon: TriangleAlert,
+          tint: 'bg-danger-soft text-danger',
+          valueClass: summary.failed ? 'text-danger' : 'text-ink',
+        },
+      ]
+    : [];
+
+  const filteredLogs = q
+    ? logs.filter((log) => {
+        const haystack = [
+          log.loanId?.itemName,
+          log.loanId?.borrower?.name,
+          log.recipient,
+          log.subject,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return haystack.includes(q.toLowerCase());
+      })
+    : logs;
+
+  const loanLabel =
+    [...upcoming, ...blocked].find((entry) => entry._id === loanId)?.itemName ??
+    failed.find((log) => (log.loanId?._id ?? log.loanId) === loanId)?.loanId?.itemName ??
+    logs.find((log) => (log.loanId?._id ?? log.loanId) === loanId)?.loanId?.itemName ??
+    '';
+
+  function renderUpcoming() {
+    if (!summary?.scheduled) {
       return (
         <EmptyState
-          icon={Inbox}
-          title="No reminders match these filters"
-          description="Nothing in your history is on that channel, mode and status combination. Clear the filters to see every logged reminder."
+          icon={CalendarClock}
+          title="Nothing is scheduled"
+          description="Automatic reminders appear here once an active lending entry has a usable channel and its next slot is set. Entries set to manual only never appear."
           action={
-            <Button variant="secondary" onClick={clearFilters}>
-              <RefreshCw className="h-4 w-4" aria-hidden="true" />
-              Clear filters
-            </Button>
+            <Link
+              to="/loans?role=lent&status=active"
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-ink transition-colors hover:bg-primary-hover"
+            >
+              Review active loans
+            </Link>
           }
         />
       );
     }
 
     return (
-      <EmptyState
-        icon={BellRing}
-        title="No reminders logged yet"
-        description="Reminders appear here once a lending entry's schedule fires on its own, or you press send on a single entry. Every attempt is logged, including the ones that never left the building."
-        action={
-          <Button onClick={handleRun} loading={running} disabled={running}>
-            {!running && <Play className="h-4 w-4" aria-hidden="true" />}
-            Run scheduler now
+      <div className="space-y-4">
+        {upcoming.length < summary.scheduled && (
+          <p className="px-1 text-xs text-muted">
+            Showing the next {upcoming.length} of {summary.scheduled} scheduled entries.
+          </p>
+        )}
+        {upcoming.map((entry) => (
+          <UpcomingCard key={entry._id} entry={entry} />
+        ))}
+      </div>
+    );
+  }
+
+  function renderBlocked() {
+    if (!summary?.blocked) {
+      return (
+        <EmptyState
+          icon={ShieldAlert}
+          title="Nothing is blocked"
+          description="Every entry with automatic reminders is armed with a channel that has both consent and contact details."
+        />
+      );
+    }
+
+    return (
+      <div className="space-y-4">
+        <p className="px-1 text-xs leading-relaxed text-muted">
+          These entries are armed, but no selected channel has everything it needs. LendLoop will
+          not send until consent and contact details are recorded — it never guesses.
+        </p>
+        {blocked.map((entry) => (
+          <BlockedCard key={entry._id} entry={entry} />
+        ))}
+      </div>
+    );
+  }
+
+  function renderFailed() {
+    if (!summary?.failed) {
+      return (
+        <EmptyState
+          icon={TriangleAlert}
+          title="No failed reminders"
+          description="Provider rejections are recorded here with the error, and only those attempts can be retried. Submitted messages are never re-sent automatically."
+        />
+      );
+    }
+
+    return (
+      <div className="space-y-4">
+        {failed.length < summary.failed && (
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+            <p className="text-xs text-muted">
+              Showing the {failed.length} most recent of {summary.failed} failed attempts.
+            </p>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => updateParams({ view: 'history', status: 'failed' })}
+            >
+              Open full history
+            </Button>
+          </div>
+        )}
+        {failed.map((log) => (
+          <LogCard
+            key={log._id}
+            log={log}
+            onRetry={handleRetry}
+            retrying={retryingId === log._id}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  function renderHistory() {
+    if (historyLoading) {
+      return <LoadingSpinner size="lg" label="Loading your reminder history" />;
+    }
+
+    if (historyError) {
+      return (
+        <div role="alert" className="panel px-6 py-12 text-center">
+          <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-lg bg-danger-soft text-danger">
+            <TriangleAlert className="h-6 w-6" aria-hidden="true" />
+          </span>
+          <h2 className="mt-4 text-base font-semibold text-ink">
+            Could not load your reminder history
+          </h2>
+          <p className="mx-auto mt-1.5 max-w-md text-sm text-muted">{historyError}</p>
+          <Button
+            variant="secondary"
+            className="mt-6"
+            onClick={() => setHistoryKey((key) => key + 1)}
+          >
+            <RefreshCw className="h-4 w-4" aria-hidden="true" />
+            Retry
           </Button>
-        }
-      />
+        </div>
+      );
+    }
+
+    if (!filteredLogs.length) {
+      return (
+        <EmptyState
+          icon={Inbox}
+          title={historyFiltersActive ? 'No reminders match these filters' : 'No reminders logged yet'}
+          description={
+            historyFiltersActive
+              ? 'Nothing in your history matches that channel, status, entry and date combination.'
+              : 'Every attempt is logged here, including automatic passes and manual sends that produced a preview or link instead of a submitted message.'
+          }
+          action={
+            historyFiltersActive ? (
+              <Button variant="secondary" onClick={clearHistoryFilters}>
+                Clear filters
+              </Button>
+            ) : (
+              <Link
+                to="/loans?role=lent&status=active"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-sm font-semibold text-primary-ink transition-colors hover:bg-primary-hover"
+              >
+                Review active loans
+              </Link>
+            )
+          }
+        />
+      );
+    }
+
+    return (
+      <div className="space-y-4">
+        {filteredLogs.length >= logLimit && (
+          <p className="px-1 text-xs text-muted">
+            Showing the newest {logLimit} attempts. Narrow the filters to reach older ones.
+          </p>
+        )}
+        {filteredLogs.map((log) => (
+          <LogCard
+            key={log._id}
+            log={log}
+            onRetry={handleRetry}
+            retrying={retryingId === log._id}
+          />
+        ))}
+      </div>
     );
   }
 
@@ -494,74 +949,182 @@ export default function RemindersPage() {
         <div className="min-w-0">
           <p className="eyebrow">Reminders</p>
           <h1 className="mt-2 text-2xl font-bold tracking-tight text-ink sm:text-3xl">
-            Reminder history
+            Reminder control centre
           </h1>
           <p className="mt-1.5 max-w-2xl text-sm text-muted">
-            Every reminder LendLoop has attempted for your lending entries, automatic and manual.
-            Anything marked preview or link generated has not reached the borrower.
+            What is scheduled, what cannot be sent, and every attempt already made. A slot is an
+            attempt, not a guarantee — only a submitted email is reported as accepted by the
+            provider, and a WhatsApp link is never claimed as delivered.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
-          <Button
-            variant="secondary"
-            onClick={() => setReloadKey((key) => key + 1)}
-            disabled={running || loading}
-          >
-            <RefreshCw className="h-4 w-4" aria-hidden="true" />
-            Refresh
-          </Button>
-          <Button onClick={handleRun} loading={running} disabled={running}>
-            {!running && <Play className="h-4 w-4" aria-hidden="true" />}
-            Run scheduler now
-          </Button>
-        </div>
+        <Button
+          variant="secondary"
+          className="sm:ml-auto"
+          onClick={refreshAll}
+          disabled={overviewLoading || historyLoading}
+        >
+          <RefreshCw className="h-4 w-4" aria-hidden="true" />
+          Refresh
+        </Button>
       </header>
 
-      <div className="panel space-y-3 p-4 sm:p-5">
-        <FilterRow label="Channel" options={CHANNEL_FILTERS} value={channel} onChange={setChannel} />
-        <FilterRow label="Mode" options={MODE_FILTERS} value={mode} onChange={setMode} />
-        <FilterRow label="Status" options={STATUS_FILTERS} value={status} onChange={setStatus} />
-        {filtersActive && (
-          <div className="flex justify-end border-t border-line pt-3">
-            <Button variant="ghost" size="sm" onClick={clearFilters}>
-              Clear filters
-            </Button>
-          </div>
-        )}
-      </div>
-
-      {!loading && !error && logs.length > 0 && <StatStrip stats={stats} columns={4} />}
-
-      {loading ? (
-        <LoadingSpinner size="lg" label="Loading your reminder history" />
-      ) : error ? (
+      {overviewError && !overview ? (
         <div role="alert" className="panel px-6 py-12 text-center">
           <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-lg bg-danger-soft text-danger">
             <TriangleAlert className="h-6 w-6" aria-hidden="true" />
           </span>
           <h2 className="mt-4 text-base font-semibold text-ink">
-            Could not load your reminder history
+            Could not load your reminder overview
           </h2>
-          <p className="mx-auto mt-1.5 max-w-md text-sm text-muted">{error}</p>
+          <p className="mx-auto mt-1.5 max-w-md text-sm text-muted">{overviewError}</p>
           <Button
             variant="secondary"
             className="mt-6"
-            onClick={() => setReloadKey((key) => key + 1)}
-            disabled={running}
+            onClick={() => setOverviewKey((key) => key + 1)}
           >
             <RefreshCw className="h-4 w-4" aria-hidden="true" />
             Retry
           </Button>
         </div>
-      ) : logs.length === 0 ? (
-        renderEmptyState()
+      ) : overviewLoading && !overview ? (
+        <LoadingSpinner size="lg" label="Loading your reminder overview" />
       ) : (
-        <div className="space-y-4">
-          {logs.map((log) => (
-            <LogCard key={log._id} log={log} />
-          ))}
-        </div>
+        <>
+          {overviewError && (
+            <div
+              role="alert"
+              className="flex items-start gap-2.5 rounded-lg border border-danger/25 bg-danger-soft px-3.5 py-3"
+            >
+              <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-danger" aria-hidden="true" />
+              <p className="text-sm font-medium text-danger">
+                Refresh failed — showing the last loaded overview. {overviewError}
+              </p>
+            </div>
+          )}
+          {summary && <StatStrip stats={stats} columns={4} />}
+
+          {summary && summary.logged > 0 && (
+            <p className="px-1 text-xs leading-relaxed text-muted">
+              {pluralise(summary.logged, 'logged attempt')} all time: {statusCounts.sent} submitted,{' '}
+              {pluralise(statusCounts.preview, 'preview')},{' '}
+              {pluralise(statusCounts.link, 'WhatsApp link')}, and {statusCounts.failed} failed.
+              Submitted means the provider accepted it; delivery is not tracked.
+            </p>
+          )}
+
+          <div className="panel flex flex-col gap-1.5 p-1.5 sm:flex-row">
+            {VIEWS.map((entry) => (
+              <ViewTab
+                key={entry.value}
+                active={view === entry.value}
+                onClick={() => updateParams({ view: entry.value === 'upcoming' ? '' : entry.value })}
+                icon={entry.icon}
+                label={entry.label}
+                count={
+                  summary
+                    ? entry.value === 'upcoming'
+                      ? summary.scheduled
+                      : entry.value === 'blocked'
+                        ? summary.blocked
+                        : entry.value === 'failed'
+                          ? summary.failed
+                          : summary.logged
+                    : undefined
+                }
+              />
+            ))}
+          </div>
+
+          {view === 'history' && (
+            <section className="panel space-y-3 p-4 sm:p-5" aria-label="Reminder history filters">
+              <label className="relative block">
+                <span className="sr-only">Search reminder history</span>
+                <input
+                  type="search"
+                  value={term}
+                  onChange={(event) => setTerm(event.target.value)}
+                  placeholder="Search item, borrower, recipient or subject"
+                  className="h-10 w-full rounded-lg border border-line bg-raised px-3 text-sm text-ink placeholder:text-faint focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+              </label>
+
+              <FilterRow
+                label="Channel"
+                options={CHANNEL_FILTERS}
+                value={channel}
+                onChange={(value) => updateParams({ channel: value })}
+              />
+              <FilterRow
+                label="Mode"
+                options={MODE_FILTERS}
+                value={mode}
+                onChange={(value) => updateParams({ mode: value })}
+              />
+              <FilterRow
+                label="Status"
+                options={STATUS_FILTERS}
+                value={status}
+                onChange={(value) => updateParams({ status: value })}
+              />
+
+              <div className="flex flex-wrap items-center gap-2 border-t border-line-soft pt-3">
+                <label className="flex items-center gap-2 text-xs font-medium text-muted">
+                  From
+                  <input
+                    type="date"
+                    value={from}
+                    onChange={(event) => updateParams({ from: event.target.value })}
+                    className="h-10 rounded-lg border border-line bg-raised px-3 text-sm text-ink focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                  />
+                </label>
+                <label className="flex items-center gap-2 text-xs font-medium text-muted">
+                  to
+                  <input
+                    type="date"
+                    value={to}
+                    onChange={(event) => updateParams({ to: event.target.value })}
+                    className="h-10 rounded-lg border border-line bg-raised px-3 text-sm text-ink focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                  />
+                </label>
+                {loanId && (
+                  <span className="inline-flex items-center gap-1.5 rounded-lg bg-raised px-2.5 py-1 text-xs font-medium text-muted ring-1 ring-inset ring-line">
+                    Entry: {loanLabel || 'selected entry'}
+                    <button
+                      type="button"
+                      onClick={() => updateParams({ loanId: '' })}
+                      aria-label="Clear entry filter"
+                      className="rounded text-faint transition-colors hover:text-ink"
+                    >
+                      <X className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  </span>
+                )}
+                {historyFiltersActive && (
+                  <Button variant="ghost" size="sm" className="ml-auto" onClick={clearHistoryFilters}>
+                    Clear filters
+                  </Button>
+                )}
+              </div>
+
+              {rangeInvalid && (
+                <p role="alert" className="text-xs font-medium text-danger">
+                  The start date falls after the end date, so no attempts can match.
+                </p>
+              )}
+            </section>
+          )}
+
+          {view === 'upcoming' && renderUpcoming()}
+          {view === 'blocked' && renderBlocked()}
+          {view === 'failed' && renderFailed()}
+          {view === 'history' && renderHistory()}
+
+          <p className="px-1 text-xs leading-relaxed text-faint">
+            Automatic slots are evaluated by the server&apos;s scheduled job. This page reports and
+            retries attempts; it does not dispatch scheduled reminders itself.
+          </p>
+        </>
       )}
     </div>
   );

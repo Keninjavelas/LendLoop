@@ -90,7 +90,16 @@ export default function LoanCard({
               <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted">
                 <User className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                 {lending ? 'Lent to ' : 'Borrowed from '}
-                <span className="font-medium text-ink">{counterparty?.name ?? 'Unknown user'}</span>
+                {lending && loan.borrowerId?._id ? (
+                  <Link
+                    to={`/borrowers/${loan.borrowerId._id}`}
+                    className="font-medium text-ink hover:text-primary hover:underline"
+                  >
+                    {counterparty?.name ?? 'Unknown user'}
+                  </Link>
+                ) : (
+                  <span className="font-medium text-ink">{counterparty?.name ?? 'Unknown user'}</span>
+                )}
                 {loan.categoryId?.name && (
                   <span className="rounded-md bg-raised px-2 py-0.5 text-xs font-medium text-muted ring-1 ring-inset ring-line">
                     {loan.categoryId.name}
@@ -151,7 +160,7 @@ export default function LoanCard({
           {onReturn && (
             <Button variant="success" size="sm" onClick={onReturn} loading={busy}>
               <Check className="h-4 w-4" aria-hidden="true" />
-              Returned
+              Mark returned
             </Button>
           )}
         </div>

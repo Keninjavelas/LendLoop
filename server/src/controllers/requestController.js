@@ -22,6 +22,77 @@ async function populateRequest(request) {
   return request.populate(REQUEST_POPULATE);
 }
 
+const REQUESTS_LIMIT = 250;
+
+function requestFilter(req, base) {
+  const filter = { ...base };
+  if (req.query.status) filter.status = req.query.status;
+  if (req.query.itemId && mongoose.isValidObjectId(String(req.query.itemId))) {
+    filter.itemId = new mongoose.Types.ObjectId(String(req.query.itemId));
+  }
+  return filter;
+}
+
+// Incoming requests show whether the requester is a known account-linked borrower for
+// this lender. The lookup is one aggregate for the whole page and stays within the
+// caller's own loans, so another lender's relationship is never exposed.
+async function attachBorrowerHistory(requests, lenderId) {
+  const borrowerIds = [
+    ...new Set(
+      requests
+        .map((request) => request.borrowerId?._id ?? request.borrowerId)
+        .filter((id) => id && mongoose.isValidObjectId(String(id)))
+        .map(String),
+    ),
+  ];
+
+  if (!borrowerIds.length) return requests.map((request) => request.toObject());
+
+  const summaries = await Loan.aggregate([
+    {
+      $match: {
+        lenderId,
+        borrowerId: { $in: borrowerIds.map((id) => new mongoose.Types.ObjectId(id)) },
+      },
+    },
+    {
+      $group: {
+        _id: '$borrowerId',
+        priorLoans: { $sum: 1 },
+        activeLoans: { $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] } },
+        overdueLoans: {
+          $sum: {
+            $cond: [
+              { $and: [{ $eq: ['$status', 'active'] }, { $lt: ['$dueDate', new Date()] }] },
+              1,
+              0,
+            ],
+          },
+        },
+        lastLentAt: { $max: '$lentAt' },
+      },
+    },
+  ]);
+
+  const byBorrower = new Map(summaries.map((entry) => [String(entry._id), entry]));
+
+  return requests.map((request) => {
+    const plain = request.toObject();
+    const borrowerId = plain.borrowerId?._id ?? plain.borrowerId;
+    const summary = borrowerId ? byBorrower.get(String(borrowerId)) : null;
+    plain.borrowerHistory = summary
+      ? {
+          linked: true,
+          priorLoans: summary.priorLoans,
+          activeLoans: summary.activeLoans,
+          overdueLoans: summary.overdueLoans,
+          lastLentAt: summary.lastLentAt,
+        }
+      : { linked: true, priorLoans: 0, activeLoans: 0, overdueLoans: 0, lastLentAt: null };
+    return plain;
+  });
+}
+
 export async function createRequest(req, res) {
   const { itemId, requestedReturnDate, message } = req.body;
 
@@ -73,22 +144,18 @@ export async function createRequest(req, res) {
 }
 
 export async function getIncomingRequests(req, res) {
-  const filter = { ownerId: req.user._id };
-  if (req.query.status) filter.status = req.query.status;
-
-  const requests = await BorrowRequest.find(filter)
+  const requests = await BorrowRequest.find(requestFilter(req, { ownerId: req.user._id }))
     .sort({ createdAt: -1 })
+    .limit(REQUESTS_LIMIT)
     .populate(REQUEST_POPULATE);
 
-  res.json({ requests });
+  res.json({ requests: await attachBorrowerHistory(requests, req.user._id) });
 }
 
 export async function getOutgoingRequests(req, res) {
-  const filter = { borrowerId: req.user._id };
-  if (req.query.status) filter.status = req.query.status;
-
-  const requests = await BorrowRequest.find(filter)
+  const requests = await BorrowRequest.find(requestFilter(req, { borrowerId: req.user._id }))
     .sort({ createdAt: -1 })
+    .limit(REQUESTS_LIMIT)
     .populate(REQUEST_POPULATE);
 
   res.json({ requests });

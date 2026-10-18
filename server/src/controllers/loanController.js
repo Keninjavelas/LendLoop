@@ -3,6 +3,7 @@ import Category from '../models/Category.js';
 import Item from '../models/Item.js';
 import Loan from '../models/Loan.js';
 import LoanHistory from '../models/LoanHistory.js';
+import User from '../models/User.js';
 import { ApiError } from '../middleware/errorMiddleware.js';
 import {
   PRIORITIES,
@@ -63,6 +64,7 @@ export async function createLoan(req, res) {
     description = '',
     categoryId,
     itemId = null,
+    borrowerId = null,
     borrower = {},
     lentAt,
     dueDate,
@@ -74,10 +76,41 @@ export async function createLoan(req, res) {
   if (!itemName || !String(itemName).trim()) {
     throw new ApiError(400, 'Item name is required');
   }
-  if (!borrower.name || !String(borrower.name).trim()) {
+  if (!categoryId) throw new ApiError(400, 'Category is required');
+
+  // A linked borrower is a repeat-lending shortcut: the account identity is only
+  // accepted when this lender has actually lent to it before. That prevents attaching
+  // an arbitrary account to a record while keeping account-linked history reliable.
+  let linkedBorrower = null;
+  if (borrowerId) {
+    if (!mongoose.isValidObjectId(String(borrowerId))) {
+      throw new ApiError(400, 'Malformed borrower id');
+    }
+    linkedBorrower = await User.findOne({ _id: borrowerId, deletedAt: null }).select(
+      'name email profile.phone',
+    );
+    if (!linkedBorrower) throw new ApiError(404, 'Borrower account not found');
+    if (linkedBorrower._id.equals(req.user._id)) {
+      throw new ApiError(400, 'You cannot record yourself as the borrower');
+    }
+    const priorRelationship = await Loan.exists({
+      lenderId: req.user._id,
+      borrowerId: linkedBorrower._id,
+    });
+    if (!priorRelationship) {
+      throw new ApiError(
+        403,
+        'Only an account you have lent to before can be linked as a repeat borrower',
+      );
+    }
+  }
+
+  const borrowerName = linkedBorrower
+    ? linkedBorrower.name
+    : String(borrower.name ?? '').trim();
+  if (!borrowerName) {
     throw new ApiError(400, 'Borrower name is required');
   }
-  if (!categoryId) throw new ApiError(400, 'Category is required');
 
   const category = await Category.findOne({ _id: categoryId, ...visibleTo(req.user._id) });
   if (!category) throw new ApiError(404, 'Category not found');
@@ -105,8 +138,12 @@ export async function createLoan(req, res) {
     ? reminders.templateMode
     : 'priority';
 
-  const email = String(borrower.email ?? '').trim().toLowerCase();
-  const phone = String(borrower.phone ?? '').trim();
+  const email = linkedBorrower
+    ? linkedBorrower.email
+    : String(borrower.email ?? '').trim().toLowerCase();
+  const phone = linkedBorrower
+    ? String(linkedBorrower.profile?.phone ?? '').trim()
+    : String(borrower.phone ?? '').trim();
   // Contact details are not required to record an entry — a lender can add them later via
   // the settings form. Only a supplied-but-malformed email is rejected; a missing address
   // or number just leaves that channel unusable, which the post-create warning reports.
@@ -155,9 +192,9 @@ export async function createLoan(req, res) {
             description: String(description).trim(),
             categoryId: category._id,
             lenderId: req.user._id,
-            borrowerId: null,
+            borrowerId: linkedBorrower ? linkedBorrower._id : null,
             borrower: {
-              name: String(borrower.name).trim(),
+              name: borrowerName,
               email,
               phone,
               consent,
@@ -224,8 +261,18 @@ export async function createLoan(req, res) {
   res.status(201).json({ loan: decorate(created), warnings });
 }
 
+// Date-only strings describe a calendar day in UTC, matching the insights ranges. An
+// inclusive `to` day is expanded to its final millisecond so the bound never drops entries.
+function parseDateOnly(value, endOfDay = false) {
+  if (!value) return null;
+  const text = String(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+  const date = new Date(`${text}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}Z`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 export async function getLoans(req, res) {
-  const { role, status, priority, q, overdue, sort } = req.query;
+  const { role, status, priority, q, overdue, sort, borrowerId, categoryId, from, to } = req.query;
 
   const filter = {};
   if (role === 'lent') {
@@ -242,21 +289,91 @@ export async function getLoans(req, res) {
     filter.status = 'active';
     filter.dueDate = { $lt: new Date() };
   }
+  if (borrowerId && mongoose.isValidObjectId(String(borrowerId))) {
+    // Combined with the role scope above, this can only narrow the caller's own records.
+    filter.borrowerId = new mongoose.Types.ObjectId(String(borrowerId));
+  }
+  if (categoryId && mongoose.isValidObjectId(String(categoryId))) {
+    filter.categoryId = new mongoose.Types.ObjectId(String(categoryId));
+  }
+
+  const fromDate = parseDateOnly(from);
+  const toDate = parseDateOnly(to, true);
+  if (fromDate || toDate) {
+    filter.lentAt = {};
+    if (fromDate) filter.lentAt.$gte = fromDate;
+    if (toDate) filter.lentAt.$lte = toDate;
+  }
+
   if (q) {
-    const pattern = new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const pattern = new RegExp(String(q).slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
     filter.$and = [{ $or: [{ itemName: pattern }, { 'borrower.name': pattern }, { notes: pattern }] }];
   }
 
+  const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
+
+  const loans = await findLoans(filter, sort, limit);
+  res.json({ loans: loans.map(decorate), limit });
+}
+
+// Overdue is derived state, so plain find() sorting cannot rank it. This aggregation puts
+// overdue first, then active by due date, then returned newest-first; priority ranking is
+// high → medium → low rather than the alphabetical order of the string values.
+async function findLoans(filter, sort, limit) {
+  const plainSort = sortMapFor(sort);
+  if (plainSort) {
+    return Loan.find(filter).sort(plainSort).limit(limit).populate(LOAN_POPULATE);
+  }
+
+  const now = new Date();
+  const rows = await Loan.aggregate([
+    { $match: filter },
+    {
+      $addFields: {
+        _overdue: {
+          $cond: [{ $and: [{ $eq: ['$status', 'active'] }, { $lt: ['$dueDate', now] }] }, 0, 1],
+        },
+        _active: { $cond: [{ $eq: ['$status', 'active'] }, 0, 1] },
+        _priority: {
+          $switch: {
+            branches: [
+              { case: { $eq: ['$priority', 'high'] }, then: 0 },
+              { case: { $eq: ['$priority', 'medium'] }, then: 1 },
+            ],
+            default: 2,
+          },
+        },
+        _time: {
+          $cond: [
+            { $eq: ['$status', 'active'] },
+            { $toLong: '$dueDate' },
+            { $multiply: [{ $toLong: { $ifNull: ['$returnedAt', '$dueDate'] } }, -1] },
+          ],
+        },
+      },
+    },
+    {
+      $sort:
+        sort === 'priority'
+          ? { _priority: 1, _overdue: 1, _active: 1, _time: 1 }
+          : { _overdue: 1, _active: 1, _priority: 1, _time: 1 },
+    },
+    { $limit: limit },
+    { $project: { _overdue: 0, _active: 0, _priority: 0, _time: 0 } },
+  ]);
+
+  const populated = await Loan.populate(rows, LOAN_POPULATE);
+  return populated.map((row) => Loan.hydrate(row));
+}
+
+function sortMapFor(sort) {
   const sortMap = {
     due: { dueDate: 1 },
     newest: { createdAt: -1 },
+    oldest: { createdAt: 1 },
+    borrower: { 'borrower.name': 1, dueDate: 1 },
   };
-
-  const loans = await Loan.find(filter)
-    .sort(sortMap[sort] ?? { createdAt: -1 })
-    .populate(LOAN_POPULATE);
-
-  res.json({ loans: loans.map(decorate) });
+  return sortMap[sort] ?? null;
 }
 
 // Only account-linked loans can be safely grouped. Manual entries deliberately stay isolated:

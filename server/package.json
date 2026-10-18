@@ -10,7 +10,7 @@
     "start": "node src/server.js",
     "seed": "node scripts/seed.js",
     "migrate": "node scripts/migrate.js",
-    "test": "node --test --test-concurrency=1 test/auth.test.js test/isolation.test.js test/lending.test.js"
+    "test": "node --test --test-concurrency=1 test/config.test.js test/auth.test.js test/isolation.test.js test/lending.test.js test/views.test.js test/insightsReminders.test.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

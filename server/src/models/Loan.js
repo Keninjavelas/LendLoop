@@ -227,5 +227,9 @@ loanSchema.index({ status: 1, dueDate: 1 });
 loanSchema.index({ lenderId: 1, priority: 1, dueDate: 1 });
 loanSchema.index({ categoryId: 1 });
 loanSchema.index({ status: 1, 'reminders.enabled': 1, 'reminders.nextDueAt': 1 });
+// Supports the insights range/export, the borrower directory and its manual-snapshot query.
+loanSchema.index({ lenderId: 1, lentAt: 1 });
+loanSchema.index({ lenderId: 1, borrowerId: 1, lentAt: -1 });
+loanSchema.index({ lenderId: 1, status: 1, returnedAt: 1 });
 
 export default mongoose.model('Loan', loanSchema);

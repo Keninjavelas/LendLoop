@@ -1,6 +1,6 @@
-import { ArrowUpRight, Inbox, RefreshCw, Send, TriangleAlert } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { ArrowUpRight, Inbox, RefreshCw, Search, Send, TriangleAlert, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import Button from '../components/common/Button.jsx';
 import EmptyState from '../components/common/EmptyState.jsx';
@@ -17,6 +17,34 @@ const REQUEST_STATUSES = [
   { value: 'rejected', label: 'Rejected' },
   { value: 'cancelled', label: 'Cancelled' },
 ];
+
+const SORT_OPTIONS = [
+  { value: 'newest', label: 'Newest first' },
+  { value: 'oldest', label: 'Oldest first' },
+  { value: 'returnDate', label: 'Requested return date' },
+];
+
+function counterpartyOf(request, direction) {
+  return direction === 'incoming' ? request.borrowerId : request.ownerId;
+}
+
+function matchesTerm(request, direction, term) {
+  const haystack = [
+    request.itemId?.title,
+    counterpartyOf(request, direction)?.name,
+    request.itemId?.categoryId?.name,
+    request.message,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return haystack.includes(term.toLowerCase());
+}
+
+function timeValue(value) {
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
 
 // ItemFilters keeps its Chip private, so the pills are rebuilt here with the same visual language.
 function FilterPill({ active, onClick, children }) {
@@ -70,10 +98,17 @@ function TabButton({ active, onClick, icon: Icon, label, count }) {
 
 export default function RequestsPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  const [direction, setDirection] = useState('incoming');
-  const [status, setStatus] = useState('');
+  const direction = searchParams.get('direction') === 'outgoing' ? 'outgoing' : 'incoming';
+  const rawStatus = searchParams.get('status') ?? '';
+  const status = REQUEST_STATUSES.some((entry) => entry.value === rawStatus) ? rawStatus : '';
+  const itemId = searchParams.get('itemId') ?? '';
+  const q = searchParams.get('q') ?? '';
+  const rawSort = searchParams.get('sort') ?? '';
+  const sort = SORT_OPTIONS.some((entry) => entry.value === rawSort) ? rawSort : 'newest';
 
+  const [term, setTerm] = useState(q);
   const [incoming, setIncoming] = useState([]);
   const [outgoing, setOutgoing] = useState([]);
 
@@ -82,16 +117,46 @@ export default function RequestsPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [busyId, setBusyId] = useState('');
 
+  function updateParams(changes) {
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        for (const [key, value] of Object.entries(changes)) {
+          if (value === '' || value === null || value === undefined) next.delete(key);
+          else next.set(key, value);
+        }
+        return next;
+      },
+      { replace: true },
+    );
+  }
+
+  useEffect(() => {
+    setTerm(q);
+  }, [q]);
+
+  // Search is applied to the loaded page of requests: both directions are already fetched
+  // for the tab counts, and a personal inbox stays well inside the 250-row response cap.
+  useEffect(() => {
+    const next = new URLSearchParams(searchParams);
+    const trimmed = term.trim();
+    if (trimmed) next.set('q', trimmed);
+    else next.delete('q');
+    if (next.toString() === searchParams.toString()) return undefined;
+    const handle = setTimeout(() => setSearchParams(next, { replace: true }), 300);
+    return () => clearTimeout(handle);
+  }, [term, searchParams, setSearchParams]);
+
   useEffect(() => {
     let ignore = false;
 
     setLoading(true);
     setError('');
 
-    const filter = status || undefined;
+    const params = { status: status || undefined, itemId: itemId || undefined };
 
     // Both directions load together so each tab can carry its own count badge.
-    Promise.all([requestService.incoming(filter), requestService.outgoing(filter)])
+    Promise.all([requestService.incoming(params), requestService.outgoing(params)])
       .then(([incomingResult, outgoingResult]) => {
         if (ignore) return;
         setIncoming(Array.isArray(incomingResult) ? incomingResult : []);
@@ -108,13 +173,24 @@ export default function RequestsPage() {
     return () => {
       ignore = true;
     };
-  }, [direction, status, reloadKey]);
+  }, [status, itemId, reloadKey]);
 
   // A record patched away from the active filter has to drop off the list immediately.
-  const visible = useMemo(() => {
-    const source = direction === 'incoming' ? incoming : outgoing;
-    return status ? source.filter((entry) => entry.status === status) : source;
-  }, [direction, status, incoming, outgoing]);
+  // Sorting also happens here so it applies to the already-filtered set without a refetch.
+  const visible = (direction === 'incoming' ? incoming : outgoing)
+    .filter((entry) => (q ? matchesTerm(entry, direction, q) : true))
+    .sort((a, b) => {
+      if (sort === 'oldest') return timeValue(a.createdAt) - timeValue(b.createdAt);
+      if (sort === 'returnDate') {
+        return timeValue(a.requestedReturnDate) - timeValue(b.requestedReturnDate);
+      }
+      return timeValue(b.createdAt) - timeValue(a.createdAt);
+    });
+
+  const hasFilters = Boolean(status || itemId || q);
+
+  const itemLabel =
+    [...incoming, ...outgoing].find((entry) => entry.itemId?._id === itemId)?.itemId?.title ?? '';
 
   function patch(entry) {
     const setter = direction === 'incoming' ? setIncoming : setOutgoing;
@@ -124,7 +200,7 @@ export default function RequestsPage() {
   }
 
   async function handleApprove(request) {
-    const itemId = request.itemId?._id;
+    const requestItemId = request.itemId?._id;
     setBusyId(request._id);
 
     try {
@@ -136,7 +212,7 @@ export default function RequestsPage() {
       setIncoming((current) =>
         current.map((entry) => {
           if (entry._id === approved._id) return { ...entry, ...approved };
-          if (itemId && entry.status === 'pending' && entry.itemId?._id === itemId) {
+          if (requestItemId && entry.status === 'pending' && entry.itemId?._id === requestItemId) {
             return { ...entry, status: 'rejected' };
           }
           return entry;
@@ -183,20 +259,28 @@ export default function RequestsPage() {
     }
   }
 
+  function clearFilters() {
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams();
+        if (current.get('direction') === 'outgoing') next.set('direction', 'outgoing');
+        return next;
+      },
+      { replace: true },
+    );
+    setTerm('');
+  }
+
   function renderEmptyState() {
-    if (status) {
+    if (hasFilters) {
       return (
         <EmptyState
-          icon={Inbox}
-          title={`No ${status} requests here`}
-          description={
-            direction === 'incoming'
-              ? 'Nothing on your listings is in this state right now. Switch the filter to see the rest.'
-              : 'None of the requests you sent are in this state right now. Switch the filter to see the rest.'
-          }
+          icon={Search}
+          title="No requests match these filters"
+          description="Try another status or search term. Clearing the filters returns to everything in this direction."
           action={
-            <Button variant="secondary" onClick={() => setStatus('')}>
-              Show all requests
+            <Button variant="secondary" onClick={clearFilters}>
+              Clear all filters
             </Button>
           }
         />
@@ -251,31 +335,94 @@ export default function RequestsPage() {
         <div className="panel flex flex-col gap-2 p-1.5 sm:flex-row">
           <TabButton
             active={direction === 'incoming'}
-            onClick={() => setDirection('incoming')}
+            onClick={() => updateParams({ direction: '' })}
             icon={Inbox}
             label="Incoming"
             count={loading ? undefined : incoming.length}
           />
           <TabButton
             active={direction === 'outgoing'}
-            onClick={() => setDirection('outgoing')}
+            onClick={() => updateParams({ direction: 'outgoing' })}
             icon={Send}
             label="Outgoing"
             count={loading ? undefined : outgoing.length}
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {REQUEST_STATUSES.map((entry) => (
-            <FilterPill
-              key={entry.value || 'all'}
-              active={status === entry.value}
-              onClick={() => setStatus(entry.value)}
-            >
-              {entry.label}
-            </FilterPill>
-          ))}
-        </div>
+        <section className="panel space-y-3 p-3 sm:p-4" aria-label="Request filters">
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+            <label className="relative block flex-1">
+              <span className="sr-only">Search requests</span>
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
+                aria-hidden="true"
+              />
+              <input
+                type="search"
+                value={term}
+                onChange={(event) => setTerm(event.target.value)}
+                placeholder="Search item, person or message"
+                className="h-10 w-full rounded-lg border border-line bg-raised pl-9 pr-3 text-sm text-ink placeholder:text-faint focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+              />
+            </label>
+
+            <label className="flex items-center gap-2 text-xs font-medium text-muted">
+              <span className="sr-only sm:not-sr-only">Sort</span>
+              <select
+                value={sort}
+                onChange={(event) =>
+                  updateParams({ sort: event.target.value === 'newest' ? '' : event.target.value })
+                }
+                className="h-10 rounded-lg border border-line bg-raised px-3 text-sm text-ink transition-colors focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+              >
+                {SORT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {REQUEST_STATUSES.map((entry) => (
+              <FilterPill
+                key={entry.value || 'all'}
+                active={status === entry.value}
+                onClick={() => updateParams({ status: entry.value })}
+              >
+                {entry.label}
+              </FilterPill>
+            ))}
+
+            {(itemId || q) && (
+              <Button variant="ghost" size="sm" className="ml-auto" onClick={clearFilters}>
+                <X className="h-3.5 w-3.5" aria-hidden="true" />
+                Clear filters
+              </Button>
+            )}
+          </div>
+
+          {itemId && (
+            <div className="flex flex-wrap items-center gap-2 border-t border-line-soft pt-3">
+              <span className="text-xs text-muted">Filtered to</span>
+              <Link
+                to={`/items/${itemId}`}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-raised px-2.5 py-1 text-xs font-semibold text-ink ring-1 ring-inset ring-line hover:text-primary"
+              >
+                {itemLabel || 'One listing'}
+                <ArrowUpRight className="h-3 w-3" aria-hidden="true" />
+              </Link>
+              <button
+                type="button"
+                onClick={() => updateParams({ itemId: '' })}
+                className="text-xs font-medium text-muted hover:text-ink"
+              >
+                Show all items
+              </button>
+            </div>
+          )}
+        </section>
       </div>
 
       {loading ? (
@@ -300,6 +447,10 @@ export default function RequestsPage() {
         renderEmptyState()
       ) : (
         <div className="space-y-4">
+          <p className="px-1 text-xs text-muted">
+            {visible.length} {visible.length === 1 ? 'request' : 'requests'}
+            {hasFilters ? ' matching these filters' : ''}
+          </p>
           {visible.map((request) => (
             <RequestCard
               key={request._id}

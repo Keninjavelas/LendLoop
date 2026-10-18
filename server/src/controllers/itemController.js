@@ -138,76 +138,200 @@ export async function listItems(req, res) {
   });
 }
 
+const OWNER_ITEM_SORTS = {
+  newest: { createdAt: -1 },
+  oldest: { createdAt: 1 },
+  title: { title: 1 },
+  // Items with a deadline sort first by that deadline; items on the shelf fall to the
+  // end so the inventory list answers "what is due next" without a second endpoint.
+  due: { sortDue: 1, createdAt: -1 },
+};
+
 export async function getMyItems(req, res) {
-  const items = await Item.aggregate([
-    { $match: { ownerId: req.user._id, status: { $ne: 'archived' } } },
-    { $sort: { createdAt: -1 } },
-    {
-      $lookup: {
-        from: REQUEST_COLLECTION,
-        let: { itemId: '$_id' },
-        as: 'pendingRequests',
-        pipeline: [
-          {
-            $match: {
-              $expr: {
-                $and: [{ $eq: ['$itemId', '$$itemId'] }, { $eq: ['$status', 'pending'] }],
+  const requestedView = String(req.query.view ?? 'all');
+  const view = ['available', 'borrowed', 'archived'].includes(requestedView)
+    ? requestedView
+    : 'all';
+  const sort = Object.hasOwn(OWNER_ITEM_SORTS, req.query.sort) ? req.query.sort : 'newest';
+  const q = String(req.query.q ?? '').trim().slice(0, 80);
+
+  const match = { ownerId: req.user._id };
+  if (view === 'all') match.status = { $ne: 'archived' };
+  else match.status = view;
+  if (q) {
+    const pattern = new RegExp(escapeRegex(q), 'i');
+    match.$or = [{ title: pattern }, { description: pattern }];
+  }
+
+  const [items, statusCounts, pendingRequests] = await Promise.all([
+    Item.aggregate([
+      { $match: match },
+      {
+        $lookup: {
+          from: REQUEST_COLLECTION,
+          let: { itemId: '$_id' },
+          as: 'pendingRequests',
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [{ $eq: ['$itemId', '$$itemId'] }, { $eq: ['$status', 'pending'] }],
+                },
               },
             },
-          },
-          { $count: 'count' },
-        ],
+            { $count: 'count' },
+          ],
+        },
       },
-    },
-    {
-      $lookup: {
-        from: 'loans',
-        let: { itemId: '$_id' },
-        as: 'activeLoans',
-        pipeline: [
-          {
-            $match: {
-              $expr: {
-                $and: [{ $eq: ['$itemId', '$$itemId'] }, { $eq: ['$status', 'active'] }],
+      {
+        $lookup: {
+          from: 'loans',
+          let: { itemId: '$_id' },
+          as: 'activeLoans',
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [{ $eq: ['$itemId', '$$itemId'] }, { $eq: ['$status', 'active'] }],
+                },
               },
             },
-          },
-          {
-            $project: {
-              priority: 1,
-              dueDate: 1,
-              borrowerName: '$borrower.name',
-              remindersEnabled: '$reminders.enabled',
+            {
+              $project: {
+                _id: 1,
+                borrowerId: 1,
+                borrowerName: '$borrower.name',
+                lentAt: 1,
+                dueDate: 1,
+                priority: 1,
+                remindersEnabled: '$reminders.enabled',
+                nextReminderAt: '$reminders.nextDueAt',
+              },
             },
+          ],
+        },
+      },
+      OWNER_LOOKUP,
+      { $unwind: '$owner' },
+      CATEGORY_LOOKUP,
+      CATEGORY_SHAPE,
+      OWNER_SHAPE,
+      {
+        $addFields: {
+          pendingRequestCount: { $ifNull: [{ $arrayElemAt: ['$pendingRequests.count', 0] }, 0] },
+          activeLoan: { $arrayElemAt: ['$activeLoans', 0] },
+          sortDue: {
+            $ifNull: [{ $arrayElemAt: ['$activeLoans.dueDate', 0] }, new Date('9999-12-31')],
           },
-        ],
+        },
       },
-    },
-    OWNER_LOOKUP,
-    { $unwind: '$owner' },
-    CATEGORY_LOOKUP,
-    CATEGORY_SHAPE,
-    OWNER_SHAPE,
-    {
-      $addFields: {
-        pendingRequestCount: { $ifNull: [{ $arrayElemAt: ['$pendingRequests.count', 0] }, 0] },
-        activeLoan: { $arrayElemAt: ['$activeLoans', 0] },
+      { $sort: OWNER_ITEM_SORTS[sort] },
+      {
+        $project: {
+          owner: 0,
+          categoryDoc: 0,
+          pendingRequests: 0,
+          activeLoans: 0,
+          sortDue: 0,
+        },
       },
-    },
-    { $project: { owner: 0, categoryDoc: 0, pendingRequests: 0, activeLoans: 0 } },
+    ]),
+    Item.aggregate([
+      { $match: { ownerId: req.user._id } },
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]),
+    BorrowRequest.countDocuments({ ownerId: req.user._id, status: 'pending' }),
   ]);
 
-  res.json({ items });
+  const byStatus = { available: 0, borrowed: 0, archived: 0 };
+  for (const entry of statusCounts) {
+    if (Object.hasOwn(byStatus, entry._id)) byStatus[entry._id] = entry.count;
+  }
+
+  res.json({
+    items,
+    counts: {
+      all: byStatus.available + byStatus.borrowed,
+      ...byStatus,
+      pendingRequests,
+    },
+  });
+}
+
+// Owner-only context. It is attached to the item payload so the public shape stays
+// `{ item }`; no owner-only field is returned to anyone else.
+async function getOwnerItemContext(itemId) {
+  const [activeLoan, pending, recent, totalLoans, returnedLoans] = await Promise.all([
+    Loan.findOne({ itemId, status: 'active' })
+      .select('borrowerId borrower.name lentAt dueDate priority origin reminders.enabled reminders.nextDueAt')
+      .lean(),
+    BorrowRequest.find({ itemId, status: 'pending' })
+      .sort({ createdAt: 1 })
+      .limit(20)
+      .select('borrowerId message requestedReturnDate createdAt')
+      .populate('borrowerId', 'name')
+      .lean(),
+    Loan.find({ itemId, status: 'returned' })
+      .sort({ returnedAt: -1 })
+      .limit(10)
+      .select('borrower.name lentAt dueDate returnedAt returnNote')
+      .lean(),
+    Loan.countDocuments({ itemId }),
+    Loan.countDocuments({ itemId, status: 'returned' }),
+  ]);
+
+  return {
+    activeLoan: activeLoan
+      ? {
+          _id: activeLoan._id,
+          borrowerId: activeLoan.borrowerId ?? null,
+          borrowerName: activeLoan.borrower?.name ?? 'Unknown borrower',
+          lentAt: activeLoan.lentAt,
+          dueDate: activeLoan.dueDate,
+          priority: activeLoan.priority,
+          origin: activeLoan.origin,
+          remindersEnabled: activeLoan.reminders?.enabled !== false,
+          nextReminderAt: activeLoan.reminders?.nextDueAt ?? null,
+        }
+      : null,
+    pendingRequests: pending.map((request) => ({
+      _id: request._id,
+      borrowerId: request.borrowerId?._id ?? null,
+      borrowerName: request.borrowerId?.name ?? 'Unknown borrower',
+      message: request.message,
+      requestedReturnDate: request.requestedReturnDate,
+      createdAt: request.createdAt,
+    })),
+    recentLoans: recent.map((loan) => ({
+      _id: loan._id,
+      borrowerName: loan.borrower?.name ?? 'Unknown borrower',
+      lentAt: loan.lentAt,
+      dueDate: loan.dueDate,
+      returnedAt: loan.returnedAt,
+      returnNote: loan.returnNote,
+    })),
+    totalLoans,
+    completedLoans: returnedLoans,
+  };
 }
 
 export async function getItemById(req, res) {
   const item = await Item.findById(req.params.id)
     .populate('ownerId', 'name')
     .populate('categoryId', 'name defaultPriority');
-  if (!item || item.status === 'archived') {
+  if (!item) throw new ApiError(404, 'Item not found');
+
+  const ownerId = item.ownerId?._id ?? item.ownerId;
+  const isOwner = Boolean(req.user?._id) && ownerId?.equals(req.user._id);
+
+  // Archived listings stay reachable only to their owner so history links keep working.
+  if (item.status === 'archived' && !isOwner) {
     throw new ApiError(404, 'Item not found');
   }
-  res.json({ item });
+
+  const payload = item.toObject();
+  if (isOwner) payload.ownerContext = await getOwnerItemContext(item._id);
+  res.json({ item: payload });
 }
 
 export async function updateItem(req, res) {
@@ -260,4 +384,43 @@ export async function deleteItem(req, res) {
 
   await Item.findOneAndDelete({ _id: item._id, ownerId: req.user._id, status: 'available' });
   res.json({ deleted: true });
+}
+
+export async function archiveItem(req, res) {
+  const item = await Item.findOne({ _id: req.params.id, ownerId: req.user._id });
+  if (!item || item.status === 'archived') {
+    throw new ApiError(404, 'Item not found, or it does not belong to you');
+  }
+  if (item.status === 'borrowed') {
+    throw new ApiError(400, 'This item is on loan and cannot be archived yet');
+  }
+
+  const pendingRequests = await BorrowRequest.countDocuments({ itemId: item._id, status: 'pending' });
+  if (pendingRequests > 0) {
+    throw new ApiError(400, 'Resolve the pending requests for this item before archiving it');
+  }
+
+  item.status = 'archived';
+  await item.save();
+  res.json({ item });
+}
+
+export async function restoreItem(req, res) {
+  const item = await Item.findOne({
+    _id: req.params.id,
+    ownerId: req.user._id,
+    status: 'archived',
+  });
+  if (!item) throw new ApiError(404, 'Archived item not found, or it does not belong to you');
+
+  // A restored listing has to be genuinely lendable. The active-loan index would reject
+  // a second loan, but surfacing the conflict here keeps the shelf state truthful.
+  const activeLoan = await Loan.exists({ itemId: item._id, status: 'active' });
+  if (activeLoan) {
+    throw new ApiError(409, 'This item still has an active loan and cannot be restored');
+  }
+
+  item.status = 'available';
+  await item.save();
+  res.json({ item });
 }

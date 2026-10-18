@@ -1,13 +1,15 @@
 import { Router } from 'express';
 import {
+  archiveItem,
   createItem,
   deleteItem,
   getItemById,
   getMyItems,
   listItems,
+  restoreItem,
   updateItem,
 } from '../controllers/itemController.js';
-import { protect } from '../middleware/authMiddleware.js';
+import { optionalProtect, protect } from '../middleware/authMiddleware.js';
 import { validateObjectId } from '../middleware/validateObjectId.js';
 
 const router = Router();
@@ -20,8 +22,13 @@ router.get('/mine', protect, getMyItems);
 
 router
   .route('/:id')
-  .get(validateObjectId, getItemById)
+  // A signed-in owner receives their private active-loan, pending-request and history
+  // context on the same public payload.
+  .get(optionalProtect, validateObjectId, getItemById)
   .patch(protect, validateObjectId, updateItem)
   .delete(protect, validateObjectId, deleteItem);
+
+router.patch('/:id/archive', protect, validateObjectId, archiveItem);
+router.patch('/:id/restore', protect, validateObjectId, restoreItem);
 
 export default router;

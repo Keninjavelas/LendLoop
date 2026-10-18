@@ -76,6 +76,19 @@ export function timeAgo(value) {
   return 'just now';
 }
 
+// timeAgo reads past timestamps; a scheduled reminder slot points at the future.
+export function untilLabel(value) {
+  if (!value) return '';
+  const diff = new Date(value).getTime() - Date.now();
+  if (Number.isNaN(diff)) return '';
+  if (diff <= 0) return 'slot is due now';
+  const minutes = Math.round(diff / 60_000);
+  if (minutes < 60) return `in ${minutes} min`;
+  const hours = Math.round(diff / 3_600_000);
+  if (hours < 48) return `in ${hours} h`;
+  return `in ${Math.round(hours / 24)} days`;
+}
+
 // `<input type="date">` expects a local YYYY-MM-DD, so the timezone offset has to
 // be cancelled out before slicing or the value can land a day early.
 export function toInputDate(date) {
@@ -89,7 +102,16 @@ export function fromInputDate(value) {
   const [year, month, day] = String(value ?? '').split('-').map(Number);
   if (!year || !month || !day) return null;
   const date = new Date(year, month - 1, day);
-  return Number.isNaN(date.getTime()) ? null : date;
+  // Date rolls impossible days forward (31 Feb becomes 3 Mar), so reject the mismatch
+  // instead of handing a different deadline to the form.
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+  return date;
 }
 
 export function tomorrowInputDate() {

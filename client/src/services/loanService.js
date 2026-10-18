@@ -1,7 +1,7 @@
 import api from './api';
 
 export const loanService = {
-  // params: { role: 'lent' | 'borrowed', status, priority, q, overdue: 'true', sort }
+  // params: { role, status, priority, q, overdue, sort, categoryId, from, to, borrowerId, limit }
   list: (params) => api.get('/loans', { params }).then((res) => res.data.loans),
   get: (id) => api.get(`/loans/${id}`).then((res) => res.data.loan),
   // Returns { loan, warnings } - warnings flag an entry armed with no usable channel.

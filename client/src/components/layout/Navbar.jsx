@@ -68,7 +68,7 @@ export default function Navbar() {
           {user ? (
             <>
               <Link
-                to="/profile"
+                to="/settings"
                 className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-raised"
               >
                 <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-soft text-sm font-bold text-primary">

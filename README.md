@@ -99,9 +99,12 @@ cp client/.env.example client/.env
 | --- | --- |
 | `PORT` | API port (default `5000`) |
 | `MONGODB_URI` | Connection string, e.g. `mongodb://localhost:27017/lendloop?replicaSet=rs0` |
-| `JWT_SECRET` | Long random string used to sign tokens |
-| `CLIENT_URL` | Allowed CORS origin(s), comma-separated |
-| `NODE_ENV` | `development` or `production` |
+| `JWT_SECRET` | Random string of at least 32 characters. Startup rejects the example placeholder |
+| `CLIENT_URL` | Allowed CORS origin(s), comma-separated. Trailing slashes are ignored |
+| `NODE_ENV` | `development`, `test` or `production` |
+| `SERVE_CLIENT` | `true` serves `client/dist` with SPA deep-link fallback; `false` is API-only. Defaults to `true` in production, otherwise `false` |
+| `TRUST_PROXY` | Hop count (`1`) or `true` (one hop) when a reverse proxy terminates HTTPS. Leave blank when directly exposed |
+| `AUTH_RATE_LIMIT_WINDOW_MS` / `AUTH_RATE_LIMIT_MAX` | Fixed-window limit for login and registration per IP (default 20 attempts / 15 minutes) |
 | `REMINDER_SCHEDULER_ENABLED` | `false` stops the cron job; manual sends still work (default `true`) |
 | `REMINDER_CRON` | node-cron expression for the reminder pass (default `* * * * *`, every minute) |
 | `REMINDER_TIMEZONE` | IANA timezone for the cron expression; blank uses the server clock |
@@ -114,7 +117,7 @@ cp client/.env.example client/.env
 
 | Variable | Purpose |
 | --- | --- |
-| `VITE_API_URL` | API base URL, e.g. `http://localhost:5000/api` |
+| `VITE_API_URL` | API base URL, baked in at build time. Defaults to `/api` for same-origin serving. Use a full URL only when the built SPA calls a different origin |
 
 `.env` files are gitignored. Never expose `MONGODB_URI`, `JWT_SECRET` or any mail credential to the frontend — the client only ever receives `VITE_API_URL`.
 
@@ -140,6 +143,8 @@ Open http://localhost:5173.
 | `npm run dev:client` | Vite dev server only |
 | `npm run build` | Production build of the client into `client/dist` |
 | `npm start` | Runs the API with plain node |
+| `npm --prefix server test` | Backend integration + unit suite against `MONGODB_URI_TEST` |
+| `npm --prefix client test` | Client utility tests (lending form, dates) |
 | `npm --prefix server run seed` | Inserts the six shared categories and six reminder templates |
 | `npm --prefix server run migrate` | Upgrades a pre-priority database (see below) |
 
@@ -159,6 +164,15 @@ All endpoints are prefixed with `/api`. Protected routes read the user from the 
 | POST | `/api/auth/login` | Sign in |
 | POST | `/api/auth/logout` | Clear the auth cookie |
 | GET | `/api/auth/me` | Current user |
+
+### Borrowers
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| GET | `/api/borrowers` | Account-linked borrowers you have lent to (`borrowers`) plus each unmerged manual snapshot (`manualEntries`), with counts. `q` searches name, email and phone |
+| GET | `/api/borrowers/:id` | One account borrower's history with you. Returns 404 when you have never lent to that account, so another lender's relationships stay invisible |
+
+Manual snapshots are never merged with each other or with an account, even when name, email and phone match. A new entry can only set `borrowerId` for an account this lender has already lent to; otherwise the borrower details stay a manual snapshot.
 
 ### Categories
 
@@ -189,8 +203,8 @@ Listing is public so the landing page can send a signed-out visitor straight to 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
 | POST | `/api/requests` | Request to borrow an item |
-| GET | `/api/requests/incoming` | Requests on your items (`status`) |
-| GET | `/api/requests/outgoing` | Requests you have sent (`status`) |
+| GET | `/api/requests/incoming` | Requests on your items (`status`, `itemId`); each carry `borrowerHistory` computed only from your own loans |
+| GET | `/api/requests/outgoing` | Requests you have sent (`status`, `itemId`) |
 | PATCH | `/api/requests/:id/approve` | Approve and open the loan |
 | PATCH | `/api/requests/:id/reject` | Reject |
 | PATCH | `/api/requests/:id/cancel` | Cancel your own pending request |
@@ -199,7 +213,7 @@ Listing is public so the landing page can send a signed-out visitor straight to 
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| GET | `/api/loans` | Your loans (`role=lent\|borrowed`, `status`, `priority`, `overdue=true`, `q`, `sort=due\|newest`) |
+| GET | `/api/loans` | Your loans (`role=lent\|borrowed`, `status`, `priority`, `overdue=true`, `q`, `borrowerId`, `categoryId`, `from`, `to`, `sort=attention\|due\|priority\|newest\|oldest\|borrower`). Date-only `from`/`to` are inclusive calendar days in UTC |
 | POST | `/api/loans` | Create a manual lending entry |
 | GET | `/api/loans/:id` | Loan details, restricted to the two parties |
 | PATCH | `/api/loans/:id` | Reminder settings: enabled, channels, frequency, template mode, custom message, overdue cadence |
@@ -219,8 +233,19 @@ Every loan response is passed through `decorate`, which adds three derived field
 
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
-| GET | `/api/reminders` | Your reminder logs (`channel`, `mode`, `status`), newest first, capped at 200 |
-| POST | `/api/reminders/run` | Fire the scheduler pass on demand, scoped to your own entries |
+| GET | `/api/reminders` | Your reminder logs (`channel`, `mode`, `status`, `loanId`, `from`, `to`), newest first, capped at 200 |
+| GET | `/api/reminders/overview` | Control-centre summary, next scheduled slots, blocked entries with missing-channel reasons, recent failures and recent activity |
+| POST | `/api/reminders/:id/retry` | Retry a `failed` attempt or regenerate a `link`. Submitted and preview logs are rejected so a message is never duplicated |
+| POST | `/api/reminders/run` | Fire the scheduler pass on demand, scoped to your own entries. Kept for automation; not shown as a primary UI control |
+
+### Insights
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| GET | `/api/insights` | Snapshot counts plus range-bound lending, returns, on-time rate, monthly volume, category mix and reminder activity (`from`, `to`; default last 90 days) |
+| GET | `/api/insights/export` | CSV of the same range's lending entries. Privacy-minimised (no email/phone) and formula-injection neutralised |
+
+Ranges are inclusive calendar days. The on-time rate is `null` until five returns exist in the range; `smallSample` and `sampleSize` explain why. Closed records without a return timestamp are reported separately as `missingTimestampClosed` rather than guessed as on time or late. `to` earlier than `from`, an impossible date, or a range over three years returns 400.
 
 ### Templates
 
@@ -348,12 +373,64 @@ The UI keeps these visually distinct — green for `sent`, blue for `preview`, a
 - Only the lender can change a loan's deadline, priority, category or reminder settings, and a returned entry can no longer be rescheduled
 - Changing a deadline or priority writes a before/after pair to `loanHistory`. The reminders diff records only the fields the lender controls — the scheduler's own `nextDueAt`, `lastSentAt` and `autoSentCount` are excluded, because the save itself immediately invalidates them and recording them would freeze a stale value into the audit trail
 
+## Deployment
+
+LendLoop runs as one Node process plus MongoDB. The production build is a static SPA in `client/dist` that Express can serve itself, with `/api/*` remaining JSON.
+
+### 1. Build and configure
+
+```bash
+npm run install:all
+npm run build                     # client/dist
+cp server/.env.example server/.env
+```
+
+In `server/.env` for production:
+
+- `NODE_ENV=production`
+- `MONGODB_URI` — Atlas or another MongoDB that supports transactions (replica set). A standalone `mongod` cannot approve requests or create loans
+- `JWT_SECRET` — at least 32 random characters; startup refuses the example placeholder
+- `CLIENT_URL=https://your-host.example` — the exact browser origin(s), comma-separated
+- `SERVE_CLIENT=true` (or leave it unset; production defaults to true) so Express serves the SPA and deep links such as `/loans/123` fall back to `index.html`
+- `TRUST_PROXY=1` when exactly one reverse proxy terminates TLS. Leave blank when the API is directly reachable
+- `REMINDER_SCHEDULER_ENABLED=true` on **one** instance only (see below)
+- Real mail provider variables if reminders should leave the process. `MAIL_DRIVER=preview` is honest but delivers nothing
+
+Start it with:
+
+```bash
+npm start
+```
+
+Startup validates the environment, refuses weak or placeholder secrets, and prints warnings for a localhost `CLIENT_URL`, an unavailable mail provider, or preview mode in production. `GET /api/health` returns 200 only while MongoDB is connected. `SIGTERM`/`SIGINT` stop the cron job, close the HTTP server and disconnect MongoDB; connections still open after 10 seconds force an exit.
+
+### 2. HTTPS, cookies and origins
+
+Production auth cookies are `HttpOnly`, `SameSite=Lax` and `Secure`, so the public origin must be HTTPS. The recommended topology is one origin with Express serving both the SPA and `/api`, which keeps the cookie first-party. Build the client with `VITE_API_URL=/api` (the default) for that topology. If the SPA is on a separate static host, build it with a full `VITE_API_URL`, configure that host to rewrite every non-asset path to `index.html`, set `SERVE_CLIENT=false`, and point `CLIENT_URL` at the static origin. A truly cross-site cookie (`SameSite=None`) is not supported here because it would require a CSRF token.
+
+### 3. Scheduler ownership
+
+The reminder cron runs inside the API process. Run exactly one scheduler-enabled instance. The database's partial unique index prevents duplicate reminder **logs**, but two scheduler instances could both dispatch a message before either log insert lands. Additional API replicas should set `REMINDER_SCHEDULER_ENABLED=false`; manual sends continue to work. The in-memory auth rate limiter is also per process, so a multi-process deployment would need a shared store to enforce one global bucket.
+
+### 4. Pre-deployment checks
+
+```bash
+npm --prefix server test          # requires MONGODB_URI_TEST ending in _test
+npm --prefix client test
+npm run build
+```
+
+Then rehearse with production env values against a disposable database and confirm: `/api/health`, login/logout, a deep link refresh, an approve/return transaction, the reminders overview and a CSV download. Deployment-ready is not the same as provider-verified: real email delivery, Atlas connectivity, TLS termination and off-host backups can only be confirmed in the target environment.
+
 ## Security
 
 - Passwords hashed with bcrypt (12 rounds) and never returned by the API
 - JWT in an HttpOnly, SameSite=Lax cookie (Secure in production) — no token in localStorage
 - SameSite=Lax plus a strict CORS origin allowlist is the CSRF mitigation; switching the cookie to `SameSite=None` for a cross-site deployment requires adding a CSRF token
 - Ownership is enforced in the query filter as well as in the controller
+- Login and registration are rate limited per IP (20 attempts / 15 minutes by default) so credential stuffing cannot run unbounded
+- Responses set `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a restrictive `Permissions-Policy` and HSTS in production
+- Startup rejects missing, short or placeholder signing secrets and malformed database URLs; production static serving only ever reads `client/dist`
 - JSON bodies capped at 100kb, ObjectIds validated, consistent JSON error envelope, 5xx details hidden in production
 - `POST /api/reminders/run` is scoped to the caller's own entries, so it can never be used to message someone else's borrower
 - Mail credentials live only in `server/.env` and are read inside `emailService`; none of them reach a response body or the client bundle

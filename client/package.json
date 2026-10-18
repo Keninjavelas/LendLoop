@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test test/lendingEntry.test.js"
+    "test": "node --test test/lendingEntry.test.js test/formatDate.test.js"
   },
   "dependencies": {
     "axios": "^1.20.0",

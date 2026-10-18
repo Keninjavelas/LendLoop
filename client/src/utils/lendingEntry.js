@@ -87,6 +87,7 @@ export function createEntryDefaults(preferences, now = new Date()) {
     itemName: '',
     description: '',
     categoryId: '',
+    borrowerId: '',
     borrowerName: '',
     borrowerEmail: '',
     borrowerPhone: '',
@@ -272,6 +273,9 @@ export function buildPayload(values) {
     description: String(values.description ?? '').trim(),
     categoryId: values.categoryId,
     itemId: values.itemId || null,
+    // Only set for a repeat lending flow started from a known account. The server
+    // re-checks that a prior relationship exists and takes contact details from it.
+    borrowerId: values.borrowerId || null,
     borrower: {
       name: String(values.borrowerName).trim(),
       email: String(values.borrowerEmail ?? '').trim().toLowerCase(),

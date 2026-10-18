@@ -10,6 +10,8 @@ dotenv.config({ path: path.resolve(here, '../.env') });
 process.env.NODE_ENV = 'test';
 process.env.MAIL_DRIVER = 'preview';
 process.env.REMINDER_SCHEDULER_ENABLED = 'false';
+// Keep the suite independent of request volume; the limiter itself is unit-tested.
+process.env.AUTH_RATE_LIMIT_MAX = '1000';
 // Never inherit the deployment signing key into a test run.
 process.env.JWT_SECRET = 'lendloop-test-secret-never-use-in-deployment';
 

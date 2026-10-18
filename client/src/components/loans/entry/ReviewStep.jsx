@@ -105,6 +105,11 @@ export default function ReviewStep({
       </ReviewSection>
 
       <ReviewSection title="Borrower" onEdit={() => onEdit('borrower')}>
+        {values.borrowerId && (
+          <Row label="Account">
+            Linked LendLoop account — contact details come from their profile.
+          </Row>
+        )}
         <Row label="Name">{values.borrowerName.trim() || '—'}</Row>
         <Row label="Email">{values.borrowerEmail.trim() || 'Not provided'}</Row>
         <Row label="WhatsApp">{values.borrowerPhone.trim() || 'Not provided'}</Row>

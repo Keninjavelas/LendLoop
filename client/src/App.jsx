@@ -1,9 +1,12 @@
-import { Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes } from 'react-router-dom';
 import AppLayout from './components/layout/AppLayout.jsx';
 import ProtectedRoute from './components/layout/ProtectedRoute.jsx';
+import BorrowerDetailPage from './pages/BorrowerDetailPage.jsx';
+import BorrowersPage from './pages/BorrowersPage.jsx';
 import CategoriesPage from './pages/CategoriesPage.jsx';
 import DashboardPage from './pages/DashboardPage.jsx';
 import ExplorePage from './pages/ExplorePage.jsx';
+import InsightsPage from './pages/InsightsPage.jsx';
 import ItemDetailsPage from './pages/ItemDetailsPage.jsx';
 import LandingPage from './pages/LandingPage.jsx';
 import LoanDetailPage from './pages/LoanDetailPage.jsx';
@@ -12,7 +15,7 @@ import LoginPage from './pages/LoginPage.jsx';
 import MyItemsPage from './pages/MyItemsPage.jsx';
 import NewLoanPage from './pages/NewLoanPage.jsx';
 import NotFoundPage from './pages/NotFoundPage.jsx';
-import ProfilePage from './pages/ProfilePage.jsx';
+import SettingsPage from './pages/ProfilePage.jsx';
 import RegisterPage from './pages/RegisterPage.jsx';
 import RemindersPage from './pages/RemindersPage.jsx';
 import RequestsPage from './pages/RequestsPage.jsx';
@@ -33,6 +36,9 @@ export default function App() {
         <Route element={<ProtectedRoute />}>
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/my-items" element={<MyItemsPage />} />
+          <Route path="/borrowers" element={<BorrowersPage />} />
+          <Route path="/borrowers/:id" element={<BorrowerDetailPage />} />
+          <Route path="/insights" element={<InsightsPage />} />
           <Route path="/requests" element={<RequestsPage />} />
           <Route path="/loans" element={<LoansPage />} />
           <Route path="/loans/new" element={<NewLoanPage />} />
@@ -40,7 +46,8 @@ export default function App() {
           <Route path="/reminders" element={<RemindersPage />} />
           <Route path="/categories" element={<CategoriesPage />} />
           <Route path="/templates" element={<TemplatesPage />} />
-          <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/profile" element={<Navigate to="/settings" replace />} />
         </Route>
       </Route>
 
